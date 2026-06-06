@@ -1,0 +1,145 @@
+import type { ComponentType, ReactNode } from 'react';
+
+export interface Disposable {
+  dispose(): void;
+}
+
+export type OverlayZone =
+  | 'toolbar.left'
+  | 'toolbar.right'
+  | 'toolbar.bottom'
+  | 'overlay.topLeft'
+  | 'overlay.topRight'
+  | 'overlay.bottomLeft'
+  | 'overlay.bottomRight';
+
+export interface HostSceneObject {
+  id: string;
+  name: string;
+  components?: unknown[];
+  [key: string]: unknown;
+}
+
+export interface VisualizerConfig {
+  id: string;
+  match: (object: HostSceneObject) => boolean;
+  component: ComponentType<{ object: HostSceneObject; selected: boolean; hovered: boolean }>;
+  priority?: number;
+  skipStandardGeometry?: boolean;
+}
+
+export interface GizmoProvider {
+  id: string;
+  match: (object: HostSceneObject) => boolean;
+  component: ComponentType<{ object: HostSceneObject; selected: boolean; hovered: boolean }>;
+  priority?: number;
+}
+
+export interface RenderPass {
+  id: string;
+  component: ComponentType<Record<string, unknown>>;
+  priority?: number;
+  params?: Record<string, unknown>;
+}
+
+export interface ViewportTool {
+  id: string;
+  label: string;
+  icon?: string;
+  editMode?: boolean;
+  subObjectModes?: Array<'object' | 'vertex' | 'edge' | 'face'>;
+  onPointer?: (event: unknown) => void;
+  onCommit?: () => void;
+}
+
+export interface RenderResourceRef {
+  assetId: string;
+  uri: string;
+  kind: 'volume' | 'sdf' | 'point_cloud' | 'gaussian_splats' | 'mesh' | 'ray_batch' | string;
+  format: string;
+  byteLength?: number;
+  contentHash?: string;
+  version?: number;
+  sceneId?: string;
+  shape?: number[];
+  bounds?: [number, number, number, number, number, number] | number[];
+  attributes?: Record<string, unknown>;
+}
+
+export interface BinaryFetchOptions {
+  signal?: AbortSignal;
+  onProgress?: (loaded: number, total?: number) => void;
+}
+
+export interface VolumeTextureResource {
+  ref: RenderResourceRef;
+  data: Float32Array;
+  resolution: [number, number, number];
+  sizeBytes: number;
+  dispose?: () => void;
+}
+
+export interface PointCloudResource {
+  ref: RenderResourceRef;
+  positions: Float32Array;
+  heat: Float32Array;
+  extraData: Array<Record<string, unknown>>;
+  count: number;
+  dispose?: () => void;
+}
+
+export interface ViewportAssetsApi {
+  resolve(ref: RenderResourceRef | string): string;
+  fetchBinary(ref: RenderResourceRef | string, options?: BinaryFetchOptions): Promise<ArrayBuffer>;
+  loadVolume(ref: RenderResourceRef, options?: BinaryFetchOptions): Promise<VolumeTextureResource>;
+  loadPointCloud(ref: RenderResourceRef, options?: BinaryFetchOptions): Promise<PointCloudResource>;
+  release(resource: { dispose?: () => void }): void;
+}
+
+export interface ViewportInteractionApi {
+  setGizmoDragging(active: boolean): void;
+  isGizmoDragging(): boolean;
+}
+
+export interface ViewportSceneWriteApi {
+  updateComponentField(
+    objectId: string,
+    componentName: string,
+    fieldName: string,
+    value: unknown
+  ): Promise<void>;
+  updateObjectTransform(
+    objectId: string,
+    transform: {
+      position?: [number, number, number];
+      rotation?: [number, number, number, number] | [number, number, number];
+      scale?: [number, number, number];
+    }
+  ): Promise<void>;
+}
+
+export interface ViewportHost {
+  readonly version: string;
+  readonly pluginId: string;
+  registerVisualizer(cfg: VisualizerConfig): Disposable;
+  registerGizmo(cfg: GizmoProvider): Disposable;
+  registerOverlay(zone: OverlayZone, render: () => ReactNode): Disposable;
+  registerPass(pass: RenderPass): Disposable;
+  registerTool(tool: ViewportTool): Disposable;
+  readonly scene: {
+    getObjects(): Record<string, HostSceneObject>;
+    getSelection(): string[];
+    subscribe(listener: () => void): () => void;
+  };
+  readonly commands: { execute(id: string, args?: unknown): Promise<unknown> };
+  readonly contextKeys: { set(k: string, v: unknown): void; get(k: string): unknown };
+  readonly assets: ViewportAssetsApi;
+  readonly interaction: ViewportInteractionApi;
+  readonly sceneWrites: ViewportSceneWriteApi;
+}
+
+export interface ViewportHostModule {
+  sdkVersion?: string;
+  activate(host: ViewportHost): void | Promise<void>;
+  deactivate?(): void | Promise<void>;
+}

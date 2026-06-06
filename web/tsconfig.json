@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "jsx": "react",
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "react": ["../../../studio/node_modules/@types/react"],
+      "three": ["../../../studio/node_modules/@types/three"],
+      "@react-three/fiber": ["../../../studio/node_modules/@react-three/fiber/dist/declarations/src/index"],
+      "@react-three/drei": ["../../../studio/node_modules/@react-three/drei/index"]
+    }
+  },
+  "include": ["src"]
+}

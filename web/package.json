@@ -1,0 +1,11 @@
+{
+  "name": "@witwin/plugin-wt-rendering-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-viewport.mjs",
+    "watch": "node scripts/build-viewport.mjs --watch",
+    "analyze": "node scripts/build-viewport.mjs --analyze",
+    "typecheck": "node ../../../studio/node_modules/typescript/bin/tsc -p tsconfig.json --noEmit"
+  }
+}
