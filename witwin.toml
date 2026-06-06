@@ -1,8 +1,9 @@
-id = "witwin.rendering"
-name = "WiTwin Rendering"
+id = "witwin.volume"
+name = "WiTwin Volume"
 version = "0.1.0"
-description = "First-party viewport renderers for Volume, SDF, Point Cloud, and Field presentation."
+description = "First-party viewport renderers for volume, SDF, point cloud, and field presentation."
 enabled = true
+repository = "https://github.com/witwin-ai/wt-volume"
 
 [engines]
 witwin = "^1.0.0"
@@ -15,7 +16,7 @@ entry = "viewport.js"
 sdkVersion = "1.0.0"
 
 [[contributes.viewport.passes]]
-id = "witwin.rendering.volumeDepth"
+id = "witwin.volume.depth"
 builtin = "volumeDepth"
 
 [permissions]
