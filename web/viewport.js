@@ -2,7 +2,7 @@
 function shared() {
   const globals = globalThis.__witwin;
   if (!globals?.react || !globals.three || !globals.fiber) {
-    throw new Error("[wt_rendering] viewport host singletons are unavailable");
+    throw new Error("[wt_volume] viewport host singletons are unavailable");
   }
   return globals;
 }
@@ -16,7 +16,7 @@ var useState = React.useState;
 var fiber = shared().fiber;
 var drei = shared().drei;
 if (!drei?.Html || !drei.Line || !drei.Text) {
-  throw new Error("[wt_rendering] @react-three/drei host singleton is incomplete");
+  throw new Error("[wt_volume] @react-three/drei host singleton is incomplete");
 }
 var useFrame = fiber.useFrame;
 var useThree = fiber.useThree;
@@ -3555,20 +3555,20 @@ function createFieldRenderingObject(host) {
 }
 function activateRenderingViewport(host) {
   host.registerVisualizer({
-    id: "witwin.rendering.field",
+    id: "witwin.volume.field",
     priority: 100,
     skipStandardGeometry: true,
     match: hasFieldComponent,
     component: createFieldRenderingObject(host)
   });
   host.registerGizmo({
-    id: "witwin.rendering.field.bounds",
+    id: "witwin.volume.field.bounds",
     priority: 100,
     match: hasFieldComponent,
     component: (props) => /* @__PURE__ */ React.createElement(FieldBoundsGizmoObject, { ...props, host })
   });
   host.registerVisualizer({
-    id: "witwin.rendering.volume",
+    id: "witwin.volume.volume",
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, volumeVisualizerConfig.matcher),
@@ -3579,7 +3579,7 @@ function activateRenderingViewport(host) {
     }
   });
   host.registerVisualizer({
-    id: "witwin.rendering.sdf",
+    id: "witwin.volume.sdf",
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, sdfVisualizerConfig.matcher),
@@ -3590,7 +3590,7 @@ function activateRenderingViewport(host) {
     }
   });
   host.registerVisualizer({
-    id: "witwin.rendering.pointcloud",
+    id: "witwin.volume.pointcloud",
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, pointCloudVisualizerConfig.matcher),

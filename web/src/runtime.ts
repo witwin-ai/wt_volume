@@ -13,7 +13,7 @@ interface WitwinViewportGlobals {
 function shared(): WitwinViewportGlobals {
   const globals = (globalThis as { __witwin?: WitwinViewportGlobals }).__witwin;
   if (!globals?.react || !globals.three || !globals.fiber) {
-    throw new Error('[wt_rendering] viewport host singletons are unavailable');
+    throw new Error('[wt_volume] viewport host singletons are unavailable');
   }
   return globals;
 }
@@ -30,7 +30,7 @@ const fiber = shared().fiber;
 const drei = shared().drei;
 
 if (!drei?.Html || !drei.Line || !drei.Text) {
-  throw new Error('[wt_rendering] @react-three/drei host singleton is incomplete');
+  throw new Error('[wt_volume] @react-three/drei host singleton is incomplete');
 }
 
 export const useFrame = fiber.useFrame;

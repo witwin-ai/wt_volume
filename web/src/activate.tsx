@@ -118,20 +118,20 @@ function createFieldRenderingObject(host: ViewportHost): ReactTypes.FC<{
 
 export function activateRenderingViewport(host: ViewportHost): void {
   host.registerVisualizer({
-    id: 'witwin.rendering.field',
+    id: 'witwin.volume.field',
     priority: 100,
     skipStandardGeometry: true,
     match: hasFieldComponent,
     component: createFieldRenderingObject(host),
   });
   host.registerGizmo({
-    id: 'witwin.rendering.field.bounds',
+    id: 'witwin.volume.field.bounds',
     priority: 100,
     match: hasFieldComponent,
     component: (props) => <FieldBoundsGizmoObject {...props} host={host} />,
   });
   host.registerVisualizer({
-    id: 'witwin.rendering.volume',
+    id: 'witwin.volume.volume',
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, volumeVisualizerConfig.matcher),
@@ -142,7 +142,7 @@ export function activateRenderingViewport(host: ViewportHost): void {
     },
   });
   host.registerVisualizer({
-    id: 'witwin.rendering.sdf',
+    id: 'witwin.volume.sdf',
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, sdfVisualizerConfig.matcher),
@@ -153,7 +153,7 @@ export function activateRenderingViewport(host: ViewportHost): void {
     },
   });
   host.registerVisualizer({
-    id: 'witwin.rendering.pointcloud',
+    id: 'witwin.volume.pointcloud',
     priority: 90,
     skipStandardGeometry: true,
     match: (object) => !!findComponent(object, pointCloudVisualizerConfig.matcher),

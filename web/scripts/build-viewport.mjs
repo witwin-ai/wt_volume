@@ -35,14 +35,14 @@ const options = {
 if (watch) {
   const ctx = await esbuild.context(options);
   await ctx.watch();
-  console.log('[wt_rendering] watching TypeScript viewport sources');
+  console.log('[wt_volume] watching TypeScript viewport sources');
 } else {
   const result = await esbuild.build(options);
   if (analyze && result.metafile) {
     const output = path.join(packageRoot, 'viewport.js');
     const outputMeta = result.metafile.outputs[output] || result.metafile.outputs[path.relative(process.cwd(), output)];
     const bytes = outputMeta?.bytes ?? 0;
-    console.log(`[wt_rendering] viewport bundle: ${(bytes / 1024).toFixed(1)} KiB`);
+    console.log(`[wt_volume] viewport bundle: ${(bytes / 1024).toFixed(1)} KiB`);
     console.log(await esbuild.analyzeMetafile(result.metafile, { verbose: false }));
   }
 }
