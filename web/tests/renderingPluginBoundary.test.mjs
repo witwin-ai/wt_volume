@@ -22,6 +22,7 @@ test('declares the volume viewport host and shader permission', () => {
   assert.match(manifest, /id = "witwin\.volume"/);
   assert.match(manifest, /entry = "viewport\.js"/);
   assert.match(manifest, /sdkVersion = "1\.0\.0"/);
+  assert.doesNotMatch(manifest, /builtin = "volumeDepth"/);
   assert.match(manifest, /frontend = true/);
   assert.match(manifest, /shader = true/);
 });
@@ -32,6 +33,7 @@ test('keeps volume activation inside the plugin bundle', () => {
   assert.match(viewportBundle, /function activate/);
   assert.match(viewportBundle, /export/);
   assert.match(viewportBundle, /activateRenderingViewport/);
+  assert.match(viewportBundle, /witwin\.volume\.depth/);
   assert.doesNotMatch(viewportBundle, /react\/jsx-runtime/);
   assert.doesNotMatch(viewportBundle, /__witwin\.rendering/);
   assert.doesNotMatch(viewportBundle, /registerFirstPartyRenderingHost/);
@@ -42,7 +44,26 @@ test('keeps volume viewport source with the plugin package', () => {
   assert.equal(pluginFileExists('web/src/viewport.ts'), true);
   assert.equal(pluginFileExists('web/src/viewport.js'), false);
   assert.equal(pluginFileExists('web/src/gizmos/VolumeVisualizer.tsx'), true);
+  assert.equal(pluginFileExists('web/src/gizmos/VolumeDepthPrepass.tsx'), true);
+  assert.equal(pluginFileExists('web/src/gizmos/VectorFieldVisualizer.tsx'), true);
+  assert.equal(pluginFileExists('web/src/gizmos/PointCloudVisualizer.tsx'), false);
   assert.equal(fs.existsSync(path.join(repoRoot, 'studio/packages/witwin-rendering')), false);
+});
+
+test('owns vector field visualization source after package split', () => {
+  const source = readPluginFile('web/src/activate.tsx');
+
+  assert.match(source, /VectorFieldVisualizer/);
+  assert.match(source, /witwin\.volume\.vectorfield/);
+  assert.equal(pluginFileExists('web/src/assets/vectorFieldTexture.ts'), true);
+});
+
+test('does not register point cloud visualizers from the volume plugin', () => {
+  const source = readPluginFile('web/src/activate.tsx');
+
+  assert.doesNotMatch(source, /PointCloudVisualizer/);
+  assert.doesNotMatch(source, /pointCloudVisualizerConfig/);
+  assert.doesNotMatch(source, /witwin\.volume\.pointcloud/);
 });
 
 test('keeps volume web authoring TypeScript-first', () => {

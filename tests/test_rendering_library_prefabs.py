@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "server"))
 sys.path.insert(0, str(ROOT / "plugins"))
 
-from wt_volume import components as _volume_components  # noqa: F401
+import wt_volume  # noqa: F401
 from witwin_server.core import Scene
 from witwin_server.features.assets.binary.handlers import BinaryAssetHandler
 from witwin_server.features.library.service import LibraryHandler
@@ -47,9 +47,9 @@ def test_rendering_library_prefabs_export_resource_refs_after_scene_attach(tmp_p
     library = LibraryHandler(server)
 
     for item_id, component_name, ref_field in [
+        ("field", "Field", "volume"),
         ("volume", "VolumeRenderer", "volume"),
         ("sdf", "SDFRenderer", "volume"),
-        ("pointclouds", "PointClouds", "cloud"),
     ]:
         result = asyncio.run(
             library._handle_create_from_library(
@@ -64,3 +64,18 @@ def test_rendering_library_prefabs_export_resource_refs_after_scene_attach(tmp_p
 
         assert values[ref_field]
         assert values[ref_field]["uri"].startswith("/scenes/default/assets/")
+
+
+def test_volume_plugin_contributes_volume_category_without_pointcloud(tmp_path: Path) -> None:
+    server = _Server(tmp_path)
+    server.handlers["binary_assets"] = BinaryAssetHandler(server)
+    library = LibraryHandler(server)
+
+    categories = {category.id: category for category in library.categories.values()}
+    items = {item.id: item for item in library.items.values()}
+
+    assert categories["volume"].name == "Volume"
+    assert items["field"].category == "volume"
+    assert items["volume"].category == "volume"
+    assert items["sdf"].category == "volume"
+    assert "pointclouds" not in items

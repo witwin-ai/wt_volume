@@ -73,7 +73,7 @@ const VolumeDepthPrepass: ReactTypes.FC = () => {
     const previousOverride = scene.overrideMaterial;
 
     // Hide everything by default; only explicitly included renderables stay visible
-    const hidden: Array<{ obj: THREE.Object3D; prevVisible: boolean }> = [];
+    const hidden: Array<{ obj: ThreeTypes.Object3D; prevVisible: boolean }> = [];
     scene.traverse((obj) => {
       const includeFlag = (obj as any).userData?.[VOLUME_DEPTH_INCLUDE_FLAG] === true;
       const userFlagged = (obj as any).userData?.[VOLUME_DEPTH_SKIP_FLAG];

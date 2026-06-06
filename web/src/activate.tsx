@@ -3,9 +3,10 @@ import { React } from './runtime';
 import type { HostSceneObject, ViewportHost } from './sdk/types';
 import VolumeVisualizer, { volumeVisualizerConfig } from './gizmos/VolumeVisualizer';
 import SDFVisualizer, { sdfVisualizerConfig } from './gizmos/SDFVisualizer';
-import PointCloudVisualizer, { pointCloudVisualizerConfig } from './gizmos/PointCloudVisualizer';
 import FieldVisualizer, { fieldVisualizerConfig } from './gizmos/FieldVisualizer';
 import FieldGizmo from './gizmos/FieldGizmo';
+import VectorFieldVisualizer, { vectorFieldVisualizerConfig } from './gizmos/VectorFieldVisualizer';
+import VolumeDepthPrepass from './gizmos/VolumeDepthPrepass';
 import { getComponentValue } from './gizmos/utils';
 
 function findComponent(object: HostSceneObject, predicate: (component: any) => boolean): any | null {
@@ -117,6 +118,11 @@ function createFieldRenderingObject(host: ViewportHost): ReactTypes.FC<{
 }
 
 export function activateRenderingViewport(host: ViewportHost): void {
+  host.registerPass({
+    id: 'witwin.volume.depth',
+    priority: -100,
+    component: VolumeDepthPrepass,
+  });
   host.registerVisualizer({
     id: 'witwin.volume.field',
     priority: 100,
@@ -153,14 +159,14 @@ export function activateRenderingViewport(host: ViewportHost): void {
     },
   });
   host.registerVisualizer({
-    id: 'witwin.volume.pointcloud',
+    id: 'witwin.volume.vectorfield',
     priority: 90,
     skipStandardGeometry: true,
-    match: (object) => !!findComponent(object, pointCloudVisualizerConfig.matcher),
-    component: ({ object, selected, hovered }) => {
-      const component = findComponent(object, pointCloudVisualizerConfig.matcher);
-      const data = component ? pointCloudVisualizerConfig.extractor(component, object) : null;
-      return data ? <PointCloudVisualizer componentData={data} assets={host.assets} selected={selected} hovered={hovered} /> : null;
+    match: (object) => !!findComponent(object, vectorFieldVisualizerConfig.matcher),
+    component: ({ object, selected }) => {
+      const component = findComponent(object, vectorFieldVisualizerConfig.matcher);
+      const data = component ? vectorFieldVisualizerConfig.extractor(component, object) : null;
+      return data ? <VectorFieldVisualizer data={data} assets={host.assets} selected={selected} /> : null;
     },
   });
 }

@@ -90,7 +90,7 @@ export function hasComponent(components: any[] | undefined, name: string): boole
  * Uses the base_classes array sent from backend
  *
  * @param component - The component to check
- * @param baseClassName - The base class name to look for (e.g., 'Field', 'VolumeRendererBase')
+ * @param baseClassName - The base class name to look for (e.g., 'Field')
  * @returns True if the component inherits from the base class
  */
 export function inheritsFrom(component: any, baseClassName: string): boolean {

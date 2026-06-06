@@ -18,11 +18,11 @@ from witwin_server.core.components.core import (
     string_field,
     vector3_field,
 )
-from witwin_server.core.components.volume_base import VolumeRendererBase
+from witwin_server.core.components.scalar_grid_resource import ScalarGridResourcePublisher
 
 
 @component(name="SDFRenderer", category="Rendering/Volume")
-class SDFRendererComponent(VolumeRendererBase):
+class SDFRendererComponent(ScalarGridResourcePublisher):
     """SDF renderer component for signed distance field visualization using sphere tracing."""
 
     # ===== Volume Data Properties =====

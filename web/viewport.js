@@ -558,10 +558,84 @@ function inheritsFrom(component, baseClassName) {
 
 // src/gizmos/VolumeDepthPrepass.tsx
 var VOLUME_DEPTH_SKIP_FLAG = "__skipVolumeDepthPrepass";
+var VOLUME_DEPTH_INCLUDE_FLAG = "__includeVolumeDepthPrepass";
+var sharedDepthTarget = null;
 var sharedDepthTexture = null;
 function getVolumeDepthTexture() {
   return sharedDepthTexture;
 }
+var VolumeDepthPrepass = () => {
+  const { gl, size, scene, camera } = useThree();
+  const enableDepthPrepass = true;
+  const depthMaterial = useMemo(() => new THREE.MeshDepthMaterial({
+    depthPacking: THREE.RGBADepthPacking
+  }), []);
+  useEffect(() => {
+    return () => {
+      depthMaterial.dispose();
+      if (sharedDepthTarget) {
+        sharedDepthTarget.dispose();
+        sharedDepthTarget = null;
+        sharedDepthTexture = null;
+      }
+    };
+  }, [depthMaterial]);
+  useFrame(() => {
+    const pixelRatio = gl.getPixelRatio();
+    const targetWidth = Math.max(1, Math.round(size.width * pixelRatio));
+    const targetHeight = Math.max(1, Math.round(size.height * pixelRatio));
+    if (!sharedDepthTarget) {
+      const depthTexture = new THREE.DepthTexture(targetWidth, targetHeight);
+      depthTexture.minFilter = THREE.NearestFilter;
+      depthTexture.magFilter = THREE.NearestFilter;
+      sharedDepthTarget = new THREE.WebGLRenderTarget(targetWidth, targetHeight, {
+        depthTexture,
+        depthBuffer: true,
+        stencilBuffer: false
+      });
+      sharedDepthTarget.texture.minFilter = THREE.NearestFilter;
+      sharedDepthTarget.texture.magFilter = THREE.NearestFilter;
+    } else if (sharedDepthTarget.width !== targetWidth || sharedDepthTarget.height !== targetHeight) {
+      sharedDepthTarget.setSize(targetWidth, targetHeight);
+    }
+    if (!sharedDepthTarget) return;
+    const previousTarget = gl.getRenderTarget();
+    if (!enableDepthPrepass) {
+      gl.setRenderTarget(sharedDepthTarget);
+      gl.clearDepth();
+      gl.setRenderTarget(previousTarget);
+      sharedDepthTexture = sharedDepthTarget.depthTexture;
+      return;
+    }
+    const previousOverride = scene.overrideMaterial;
+    const hidden = [];
+    scene.traverse((obj) => {
+      const includeFlag = obj.userData?.[VOLUME_DEPTH_INCLUDE_FLAG] === true;
+      const userFlagged = obj.userData?.[VOLUME_DEPTH_SKIP_FLAG];
+      const helperRenderable = obj.isLine || obj.isLineSegments || obj.isPoints || obj.isSprite;
+      const isMeshLike = obj.isMesh || obj.isInstancedMesh || obj.isSkinnedMesh;
+      const isRenderable = isMeshLike || helperRenderable;
+      if (!isRenderable) return;
+      const shouldHide = userFlagged || helperRenderable || !includeFlag;
+      if (shouldHide) {
+        hidden.push({ obj, prevVisible: obj.visible });
+        obj.visible = false;
+      }
+    });
+    scene.overrideMaterial = depthMaterial;
+    gl.setRenderTarget(sharedDepthTarget);
+    gl.clear();
+    gl.render(scene, camera);
+    scene.overrideMaterial = previousOverride;
+    gl.setRenderTarget(previousTarget);
+    hidden.forEach(({ obj, prevVisible }) => {
+      obj.visible = prevVisible;
+    });
+    sharedDepthTexture = sharedDepthTarget.depthTexture;
+  }, -1);
+  return null;
+};
+var VolumeDepthPrepass_default = VolumeDepthPrepass;
 
 // src/gizmos/VolumeVisualizer.tsx
 var LoadingSpinner = () => /* @__PURE__ */ React.createElement(Html, { center: true }, /* @__PURE__ */ React.createElement("div", { style: {
@@ -1526,392 +1600,6 @@ var sdfVisualizerConfig = {
   labelOffset: 0.6
 };
 var SDFVisualizer_default = SDFVisualizer;
-
-// src/gizmos/PointCloudVisualizer.tsx
-function infernoColormap3(v) {
-  if (v < 0.25) {
-    const t = v / 0.25;
-    return [1e-3 + t * 0.15, 1e-3 + t * 0.06, 0.014 + t * 0.34];
-  } else if (v < 0.5) {
-    const t = (v - 0.25) / 0.25;
-    return [0.15 + t * 0.45, 0.07 + t * 0.09, 0.35 + t * 0.15];
-  } else if (v < 0.75) {
-    const t = (v - 0.5) / 0.25;
-    return [0.6 + t * 0.35, 0.16 + t * 0.36, 0.5 - t * 0.4];
-  } else {
-    const t = (v - 0.75) / 0.25;
-    return [0.95 + t * 0.03, 0.52 + t * 0.42, 0.1 - t * 0.03];
-  }
-}
-function plasmaColormap3(v) {
-  if (v < 0.25) {
-    const t = v / 0.25;
-    return [0.05 + t * 0.35, 0.03 + t * 0.02, 0.53 + t * 0.17];
-  } else if (v < 0.5) {
-    const t = (v - 0.25) / 0.25;
-    return [0.4 + t * 0.4, 0.05 + t * 0.1, 0.7 - t * 0.2];
-  } else if (v < 0.75) {
-    const t = (v - 0.5) / 0.25;
-    return [0.8 + t * 0.15, 0.15 + t * 0.35, 0.5 - t * 0.3];
-  } else {
-    const t = (v - 0.75) / 0.25;
-    return [0.95 + t * 0.05, 0.5 + t * 0.4, 0.2 - t * 0.1];
-  }
-}
-function viridisColormap3(v) {
-  if (v < 0.25) {
-    const t = v / 0.25;
-    return [0.267 + t * 0.015, 4e-3 + t * 0.136, 0.329 + t * 0.128];
-  } else if (v < 0.5) {
-    const t = (v - 0.25) / 0.25;
-    return [0.282 - t * 0.155, 0.14 + t * 0.426, 0.457 + t * 0.093];
-  } else if (v < 0.75) {
-    const t = (v - 0.5) / 0.25;
-    return [0.127 + t * 0.614, 0.566 + t * 0.307, 0.55 - t * 0.4];
-  } else {
-    const t = (v - 0.75) / 0.25;
-    return [0.741 + t * 0.252, 0.873 + t * 0.033, 0.15 - t * 6e-3];
-  }
-}
-function jetColormap3(v) {
-  if (v < 0.125) {
-    const t = v / 0.125;
-    return [0, 0, 0.5 + t * 0.5];
-  } else if (v < 0.375) {
-    const t = (v - 0.125) / 0.25;
-    return [0, t, 1];
-  } else if (v < 0.625) {
-    const t = (v - 0.375) / 0.25;
-    return [t, 1, 1 - t];
-  } else if (v < 0.875) {
-    const t = (v - 0.625) / 0.25;
-    return [1, 1 - t, 0];
-  } else {
-    const t = (v - 0.875) / 0.125;
-    return [1 - t * 0.5, 0, 0];
-  }
-}
-function coolwarmColormap3(v) {
-  if (v < 0.5) {
-    const t = v / 0.5;
-    return [0.23 + t * 0.77, 0.3 + t * 0.7, 0.75 + t * 0.25];
-  } else {
-    const t = (v - 0.5) / 0.5;
-    return [1, 1 - t * 0.7, 1 - t * 0.75];
-  }
-}
-function bwrColormap3(v) {
-  if (v < 0.5) {
-    const t = v / 0.5;
-    return [t, t, 1];
-  } else {
-    const t = (v - 0.5) / 0.5;
-    return [1, 1 - t, 1 - t];
-  }
-}
-function getColormapFunc3(name) {
-  switch (name) {
-    case "inferno":
-      return infernoColormap3;
-    case "plasma":
-      return plasmaColormap3;
-    case "viridis":
-      return viridisColormap3;
-    case "jet":
-      return jetColormap3;
-    case "coolwarm":
-      return coolwarmColormap3;
-    case "bwr":
-      return bwrColormap3;
-    default:
-      return viridisColormap3;
-  }
-}
-var vertexShader = `
-  attribute vec3 color;
-  varying vec3 vColor;
-  uniform float pointSize;      // base size (already *100 for screen mode)
-  uniform float worldPointSize; // raw point_size for world mode (in world units)
-  uniform float pointScale;
-  uniform float pixelRatio;
-  uniform float spaceMode;  // 0 = screen space, 1 = world space
-  uniform float viewportHeight;
-
-  void main() {
-    vColor = color;
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-
-    float size;
-    if (spaceMode > 0.5) {
-      // World Space: size is in world units, gets smaller with perspective
-      // Calculate pixel size based on world unit at this depth
-      // projectionMatrix[1][1] = 1 / tan(fov/2), relates to vertical field of view
-      float worldUnitInPixels = viewportHeight * projectionMatrix[1][1] / (-mvPosition.z * 2.0);
-      // worldPointSize is the actual world size (e.g., 0.05 = 0.05 units)
-      size = worldPointSize * pointScale * worldUnitInPixels * pixelRatio;
-    } else {
-      // Screen Space: constant screen size regardless of distance
-      size = pointSize * pointScale * pixelRatio * 10.0;
-    }
-
-    gl_PointSize = clamp(size, 1.0, 256.0);
-    gl_Position = projectionMatrix * mvPosition;
-  }
-`;
-var fragmentShader = `
-  varying vec3 vColor;
-  uniform float opacity;
-
-  void main() {
-    // Create circular shape
-    vec2 center = gl_PointCoord - vec2(0.5);
-    float dist = length(center);
-
-    // Smooth circle edge
-    float alpha = 1.0 - smoothstep(0.4, 0.5, dist);
-
-    if (alpha < 0.01) discard;
-
-    gl_FragColor = vec4(vColor, alpha * opacity);
-  }
-`;
-var tooltipElement = null;
-if (typeof document !== "undefined") {
-  const existing = document.querySelector(".pointcloud-tooltip");
-  if (existing) {
-    existing.remove();
-  }
-}
-function getOrCreateTooltip() {
-  if (!tooltipElement || !document.body.contains(tooltipElement)) {
-    tooltipElement = document.createElement("div");
-    tooltipElement.className = "pointcloud-tooltip";
-    tooltipElement.style.position = "fixed";
-    tooltipElement.style.pointerEvents = "none";
-    tooltipElement.style.zIndex = "9999";
-    tooltipElement.style.display = "none";
-    tooltipElement.style.background = "#2a2a2a";
-    tooltipElement.style.color = "#ffffff";
-    tooltipElement.style.border = "1px solid #444";
-    tooltipElement.style.borderRadius = "4px";
-    tooltipElement.style.padding = "8px";
-    tooltipElement.style.fontSize = "11px";
-    tooltipElement.style.fontFamily = "-apple-system, BlinkMacSystemFont, sans-serif";
-    tooltipElement.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.3)";
-    tooltipElement.style.minWidth = "180px";
-    tooltipElement.style.maxWidth = "300px";
-    document.body.appendChild(tooltipElement);
-  }
-  return tooltipElement;
-}
-function showTooltip(x, y, position, heat, extraData) {
-  const tooltip = getOrCreateTooltip();
-  const sectionStyle = "display:flex;justify-content:space-between;align-items:baseline;gap:8px;padding:2px 0;line-height:1.4;";
-  const labelStyle = "color:#aaa;font-weight:500;flex-shrink:0;";
-  const valueStyle = "color:#fff;font-family:monospace;font-size:11px;text-align:right;";
-  const dividerStyle = "height:1px;background:#444;margin:4px 0;";
-  let html = `
-    <div style="${sectionStyle}">
-      <span style="${labelStyle}">Position:</span>
-      <span style="${valueStyle}">(${position[0].toFixed(2)}, ${position[1].toFixed(2)}, ${position[2].toFixed(2)})</span>
-    </div>
-    <div style="${sectionStyle}">
-      <span style="${labelStyle}">Heat:</span>
-      <span style="${valueStyle}">${heat.toFixed(3)}</span>
-    </div>
-  `;
-  const entries = Object.entries(extraData || {});
-  if (entries.length > 0) {
-    html += `<div style="${dividerStyle}"></div>`;
-    for (const [key, value] of entries) {
-      html += `
-        <div style="${sectionStyle}">
-          <span style="${labelStyle}">${key}:</span>
-          <span style="${valueStyle}">${String(value)}</span>
-        </div>
-      `;
-    }
-  }
-  tooltip.innerHTML = html;
-  tooltip.style.left = x + 15 + "px";
-  tooltip.style.top = y + 15 + "px";
-  tooltip.style.display = "block";
-}
-function hideTooltip() {
-  const tooltip = getOrCreateTooltip();
-  tooltip.style.display = "none";
-}
-function getPointPosition(positions, index) {
-  return [
-    positions[index * 3],
-    positions[index * 3 + 1],
-    positions[index * 3 + 2]
-  ];
-}
-function getPointHeat(heat, index) {
-  return heat[index];
-}
-var PointCloudVisualizer = ({
-  componentData,
-  assets,
-  selected,
-  hovered
-}) => {
-  const pointsRef = useRef(null);
-  const [pointData, setPointData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const { gl, raycaster } = useThree();
-  useEffect(() => {
-    if (!componentData.cloud) {
-      setPointData(null);
-      return;
-    }
-    setLoading(true);
-    assets.loadPointCloud(componentData.cloud).then((data) => {
-      setPointData({
-        positions: data.positions,
-        heat: data.heat,
-        extra_data: data.extraData,
-        count: data.count,
-        point_size: componentData.point_size,
-        colormap: componentData.colormap,
-        heat_min: componentData.heat_min,
-        heat_max: componentData.heat_max,
-        show_points: componentData.show_points,
-        opacity: componentData.opacity,
-        point_scale: componentData.point_scale ?? 1,
-        space_mode: componentData.space_mode ?? "screen"
-      });
-    }).catch((err) => {
-      console.error("Failed to load point cloud:", err);
-      setPointData(null);
-    }).finally(() => setLoading(false));
-  }, [assets, componentData.cloud?.assetId, componentData.cloud?.uri, componentData.point_size, componentData.colormap, componentData.heat_min, componentData.heat_max]);
-  const colormapFunc = useMemo(() => {
-    return getColormapFunc3(componentData.colormap);
-  }, [componentData.colormap]);
-  const geometry = useMemo(() => {
-    if (!pointData) return null;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(pointData.positions, 3));
-    const colors = new Float32Array(pointData.count * 3);
-    for (let i = 0; i < pointData.count; i++) {
-      const heatValue = pointData.heat[i];
-      const normalized = (heatValue - pointData.heat_min) / (pointData.heat_max - pointData.heat_min || 1);
-      const clampedNormalized = Math.max(0, Math.min(1, normalized));
-      const [r, g, b] = colormapFunc(clampedNormalized);
-      colors[i * 3] = r;
-      colors[i * 3 + 1] = g;
-      colors[i * 3 + 2] = b;
-    }
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-    return geo;
-  }, [pointData, colormapFunc]);
-  const material = useMemo(() => {
-    return new THREE.ShaderMaterial({
-      uniforms: {
-        pointSize: { value: componentData.point_size * 100 },
-        worldPointSize: { value: componentData.point_size },
-        pointScale: { value: componentData.point_scale ?? 1 },
-        opacity: { value: componentData.opacity },
-        pixelRatio: { value: gl.getPixelRatio() },
-        spaceMode: { value: componentData.space_mode === "world" ? 1 : 0 },
-        viewportHeight: { value: gl.domElement.clientHeight }
-      },
-      vertexShader,
-      fragmentShader,
-      transparent: true,
-      depthWrite: true,
-      depthTest: true,
-      blending: THREE.NormalBlending
-    });
-  }, [gl]);
-  useEffect(() => {
-    raycaster.params.Points = raycaster.params.Points || {};
-    raycaster.params.Points.threshold = componentData.point_size * 2;
-  }, [raycaster, componentData.point_size]);
-  useEffect(() => {
-    if (material) {
-      material.uniforms.pointSize.value = componentData.point_size * 100;
-      material.uniforms.worldPointSize.value = componentData.point_size;
-      material.uniforms.pointScale.value = componentData.point_scale ?? 1;
-      material.uniforms.opacity.value = componentData.opacity;
-      material.uniforms.spaceMode.value = componentData.space_mode === "world" ? 1 : 0;
-      material.uniforms.viewportHeight.value = gl.domElement.clientHeight;
-    }
-  }, [material, gl, componentData.point_size, componentData.point_scale, componentData.opacity, componentData.space_mode]);
-  const handlePointerMove = useCallback((event) => {
-    if (!pointData || !pointsRef.current) return;
-    event.stopPropagation();
-    const intersection = event.intersections.find((i) => i.object === pointsRef.current);
-    if (intersection && intersection.index !== void 0) {
-      const idx = intersection.index;
-      const position = getPointPosition(pointData.positions, idx);
-      const heat = getPointHeat(pointData.heat, idx);
-      const extraData = pointData.extra_data?.[idx] || {};
-      showTooltip(event.clientX, event.clientY, position, heat, extraData);
-    } else {
-      hideTooltip();
-    }
-  }, [pointData]);
-  const handlePointerLeave = useCallback((event) => {
-    event.stopPropagation();
-    hideTooltip();
-  }, []);
-  useEffect(() => {
-    return () => hideTooltip();
-  }, []);
-  useEffect(() => {
-    return () => {
-      geometry?.dispose();
-      material?.dispose();
-    };
-  }, [geometry, material]);
-  if (!pointData || !geometry || !componentData.show_points) return null;
-  if (loading) return null;
-  return /* @__PURE__ */ React.createElement(
-    "points",
-    {
-      ref: pointsRef,
-      geometry,
-      material,
-      onPointerMove: handlePointerMove,
-      onPointerLeave: handlePointerLeave
-    }
-  );
-};
-var PointCloudVisualizerAdapter = ({
-  data,
-  assets,
-  selected,
-  hovered
-}) => {
-  return /* @__PURE__ */ React.createElement(PointCloudVisualizer, { componentData: data, assets, selected, hovered });
-};
-var pointCloudVisualizerConfig = {
-  name: "pointcloud",
-  priority: 5,
-  // Match PointClouds component
-  matcher: (c) => c.name === "PointClouds",
-  // Extract visualization data from component
-  // Always return data (even without a cloud resource) so object is selectable
-  extractor: (comp) => ({
-    point_count: getComponentValue(comp, "point_count", 0),
-    point_size: getComponentValue(comp, "point_size", 0.05),
-    colormap: getComponentValue(comp, "colormap", "viridis"),
-    heat_min: getComponentValue(comp, "heat_min", 0),
-    heat_max: getComponentValue(comp, "heat_max", 1),
-    show_points: getComponentValue(comp, "show_points", true),
-    opacity: getComponentValue(comp, "opacity", 1),
-    point_scale: getComponentValue(comp, "point_scale", 1),
-    space_mode: getComponentValue(comp, "space_mode", "screen"),
-    cloud: getComponentValue(comp, "cloud", null)
-  }),
-  component: PointCloudVisualizerAdapter,
-  skipStandardGeometry: true,
-  labelOffset: 0.6
-};
-var PointCloudVisualizer_default = PointCloudVisualizer;
 
 // src/shaders/planeSliceShaders.ts
 var planeSliceVertexShader = `
@@ -3465,6 +3153,354 @@ var FieldGizmo = ({
 };
 var FieldGizmo_default = FieldGizmo;
 
+// src/assets/vectorFieldTexture.ts
+async function loadVectorFieldData(assets, vectorFieldId, onProgress) {
+  const buffer = await assets.fetchBinary(vectorFieldId, {
+    onProgress: onProgress ? (loaded, total) => onProgress(loaded, total ?? loaded) : void 0
+  });
+  const allChunks = new Uint8Array(buffer);
+  const headerView = new DataView(allChunks.buffer, 0, 12);
+  const nx = headerView.getUint32(0, true);
+  const ny = headerView.getUint32(4, true);
+  const nz = headerView.getUint32(8, true);
+  const dataBytes = new Uint8Array(allChunks.buffer, 12);
+  const expectedSize = nx * ny * nz * 4;
+  const float32Data = new Float32Array(dataBytes.buffer, dataBytes.byteOffset, expectedSize);
+  if (float32Data.length !== expectedSize) {
+    throw new Error(
+      `Vector field size mismatch: expected ${expectedSize} floats, got ${float32Data.length}`
+    );
+  }
+  return {
+    rawData: float32Data,
+    resolution: [nx, ny, nz],
+    sizeBytes: allChunks.byteLength
+  };
+}
+function sampleVectorField(data, resolution, density, minMagnitude, maxMagnitude) {
+  const [nx, ny, nz] = resolution;
+  const stepX = Math.max(1, Math.floor(nx / density));
+  const stepY = Math.max(1, Math.floor(ny / density));
+  const stepZ = Math.max(1, Math.floor(nz / density));
+  const tempPositions = [];
+  const tempDirections = [];
+  const tempMagnitudes = [];
+  for (let iz = 0; iz < nz; iz += stepZ) {
+    for (let iy = 0; iy < ny; iy += stepY) {
+      for (let ix = 0; ix < nx; ix += stepX) {
+        const idx = ((iz * ny + iy) * nx + ix) * 4;
+        const vx = data[idx];
+        const vy = data[idx + 1];
+        const vz = data[idx + 2];
+        const mag = data[idx + 3];
+        if (mag < minMagnitude || mag > maxMagnitude) continue;
+        const px = ix / (nx - 1 || 1) - 0.5;
+        const py = iy / (ny - 1 || 1) - 0.5;
+        const pz = iz / (nz - 1 || 1) - 0.5;
+        const len = Math.sqrt(vx * vx + vy * vy + vz * vz);
+        if (len < 1e-4) continue;
+        tempPositions.push(px, py, pz);
+        tempDirections.push(vx / len, vy / len, vz / len);
+        tempMagnitudes.push(mag);
+      }
+    }
+  }
+  const count = tempMagnitudes.length;
+  return {
+    positions: new Float32Array(tempPositions),
+    directions: new Float32Array(tempDirections),
+    magnitudes: new Float32Array(tempMagnitudes),
+    count
+  };
+}
+
+// src/gizmos/VectorFieldVisualizer.tsx
+var DEFAULT_FIELD_COLOR2 = "#333333";
+var DEFAULT_FIELD_OPACITY2 = 0.7;
+var LoadingSpinner3 = () => /* @__PURE__ */ React.createElement(Html, { center: true }, /* @__PURE__ */ React.createElement("div", { style: {
+  width: 32,
+  height: 32,
+  border: "3px solid rgba(100, 150, 255, 0.3)",
+  borderTop: "3px solid #4488ff",
+  borderRadius: "50%",
+  animation: "spin 1s linear infinite"
+} }, /* @__PURE__ */ React.createElement("style", null, `@keyframes spin { to { transform: rotate(360deg); } }`)));
+function createArrowGeometry() {
+  const shaftRadius = 0.015;
+  const shaftLength = 0.65;
+  const headRadius = 0.045;
+  const headLength = 0.35;
+  const shaft = new THREE.CylinderGeometry(shaftRadius, shaftRadius, shaftLength, 6);
+  shaft.translate(0, shaftLength / 2, 0);
+  const head = new THREE.ConeGeometry(headRadius, headLength, 6);
+  head.translate(0, shaftLength + headLength / 2, 0);
+  const shaftPos = shaft.getAttribute("position");
+  const headPos = head.getAttribute("position");
+  const shaftNorm = shaft.getAttribute("normal");
+  const headNorm = head.getAttribute("normal");
+  const totalVertices = shaftPos.count + headPos.count;
+  const positions = new Float32Array(totalVertices * 3);
+  const normals = new Float32Array(totalVertices * 3);
+  for (let i = 0; i < shaftPos.count; i++) {
+    positions[i * 3] = shaftPos.getX(i);
+    positions[i * 3 + 1] = shaftPos.getY(i);
+    positions[i * 3 + 2] = shaftPos.getZ(i);
+    normals[i * 3] = shaftNorm.getX(i);
+    normals[i * 3 + 1] = shaftNorm.getY(i);
+    normals[i * 3 + 2] = shaftNorm.getZ(i);
+  }
+  const offset = shaftPos.count;
+  for (let i = 0; i < headPos.count; i++) {
+    positions[(offset + i) * 3] = headPos.getX(i);
+    positions[(offset + i) * 3 + 1] = headPos.getY(i);
+    positions[(offset + i) * 3 + 2] = headPos.getZ(i);
+    normals[(offset + i) * 3] = headNorm.getX(i);
+    normals[(offset + i) * 3 + 1] = headNorm.getY(i);
+    normals[(offset + i) * 3 + 2] = headNorm.getZ(i);
+  }
+  const shaftIndex = shaft.getIndex();
+  const headIndex = head.getIndex();
+  const indices = new Uint16Array(shaftIndex.count + headIndex.count);
+  for (let i = 0; i < shaftIndex.count; i++) {
+    indices[i] = shaftIndex.getX(i);
+  }
+  for (let i = 0; i < headIndex.count; i++) {
+    indices[shaftIndex.count + i] = headIndex.getX(i) + offset;
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  merged.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  merged.setIndex(new THREE.BufferAttribute(indices, 1));
+  shaft.dispose();
+  head.dispose();
+  return merged;
+}
+var VectorFieldVisualizer = ({
+  data,
+  assets,
+  selected = false
+}) => {
+  const meshRef = useRef(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [rawData, setRawData] = useState(null);
+  const [dataResolution, setDataResolution] = useState([1, 1, 1]);
+  const {
+    vector_field_id = "",
+    resolution = [64, 64, 64],
+    min_bound = [-5, -5, -5],
+    max_bound = [5, 5, 5],
+    dimension = "3D",
+    colormap = "viridis",
+    vector_arrow_density = 16,
+    vector_arrow_scale = 1,
+    vector_arrow_thickness = 1,
+    display_range = [0, 1],
+    vector_normalize_arrows = false
+  } = data;
+  const vector_value_min = display_range[0];
+  const vector_value_max = display_range[1];
+  const isGizmoDragging = false;
+  const fieldSize = useMemo(() => [
+    max_bound[0] - min_bound[0],
+    max_bound[1] - min_bound[1],
+    max_bound[2] - min_bound[2]
+  ], [min_bound, max_bound]);
+  const fieldCenter = useMemo(() => [
+    (min_bound[0] + max_bound[0]) / 2,
+    (min_bound[1] + max_bound[1]) / 2,
+    (min_bound[2] + max_bound[2]) / 2
+  ], [min_bound, max_bound]);
+  const boxEdges = useMemo(() => {
+    const [minX, minY, minZ] = min_bound;
+    const [maxX, maxY, maxZ] = max_bound;
+    const corners = [
+      [minX, minY, minZ],
+      // 0
+      [maxX, minY, minZ],
+      // 1
+      [maxX, maxY, minZ],
+      // 2
+      [minX, maxY, minZ],
+      // 3
+      [minX, minY, maxZ],
+      // 4
+      [maxX, minY, maxZ],
+      // 5
+      [maxX, maxY, maxZ],
+      // 6
+      [minX, maxY, maxZ]
+      // 7
+    ];
+    return [
+      // Bottom face
+      [corners[0], corners[1]],
+      [corners[1], corners[5]],
+      [corners[5], corners[4]],
+      [corners[4], corners[0]],
+      // Top face
+      [corners[3], corners[2]],
+      [corners[2], corners[6]],
+      [corners[6], corners[7]],
+      [corners[7], corners[3]],
+      // Vertical edges
+      [corners[0], corners[3]],
+      [corners[1], corners[2]],
+      [corners[5], corners[6]],
+      [corners[4], corners[7]]
+    ];
+  }, [min_bound, max_bound]);
+  const edgeLineWidth = selected ? 2.5 : 1.5;
+  const edgeColor = isGizmoDragging ? "#666666" : selected ? "#ff8800" : DEFAULT_FIELD_COLOR2;
+  const edgeOpacity = isGizmoDragging ? 0.3 : selected ? 1 : DEFAULT_FIELD_OPACITY2;
+  useEffect(() => {
+    if (!vector_field_id) {
+      setRawData(null);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    loadVectorFieldData(assets, vector_field_id).then((result) => {
+      setRawData(result.rawData);
+      setDataResolution(result.resolution);
+      setLoading(false);
+    }).catch((err) => {
+      console.error("[VectorFieldVisualizer] Load failed:", err);
+      setError(err.message);
+      setLoading(false);
+    });
+  }, [assets, vector_field_id]);
+  const instanceData = useMemo(() => {
+    if (!rawData) return null;
+    return sampleVectorField(
+      rawData,
+      dataResolution,
+      vector_arrow_density,
+      vector_value_min,
+      vector_value_max
+    );
+  }, [rawData, dataResolution, vector_arrow_density, vector_value_min, vector_value_max]);
+  const arrowGeometry = useMemo(() => createArrowGeometry(), []);
+  const material = useMemo(() => {
+    return new THREE.MeshStandardMaterial({
+      roughness: 0.6,
+      metalness: 0.2,
+      side: THREE.DoubleSide
+    });
+  }, []);
+  const colormapFunc = useMemo(() => getColormapFunc(colormap), [colormap]);
+  useEffect(() => {
+    if (!meshRef.current || !instanceData || instanceData.count === 0) return;
+    const mesh = meshRef.current;
+    const { positions, directions, magnitudes, count } = instanceData;
+    mesh.count = count;
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const direction = new THREE.Vector3();
+    const colors = new Float32Array(count * 3);
+    const minFieldDim = Math.min(fieldSize[0], fieldSize[1], fieldSize[2]);
+    const baseSize = minFieldDim / vector_arrow_density * 0.9;
+    for (let i = 0; i < count; i++) {
+      position.set(
+        positions[i * 3] * fieldSize[0] + fieldCenter[0],
+        positions[i * 3 + 1] * fieldSize[1] + fieldCenter[1],
+        positions[i * 3 + 2] * fieldSize[2] + fieldCenter[2]
+      );
+      direction.set(
+        directions[i * 3],
+        directions[i * 3 + 1],
+        directions[i * 3 + 2]
+      );
+      quaternion.setFromUnitVectors(up, direction);
+      const mag = magnitudes[i];
+      const arrowLength = vector_normalize_arrows ? baseSize * vector_arrow_scale : baseSize * (0.3 + mag * 0.7) * vector_arrow_scale;
+      const arrowThickness = baseSize * vector_arrow_thickness;
+      scale.set(arrowThickness, arrowLength, arrowThickness);
+      matrix.compose(position, quaternion, scale);
+      mesh.setMatrixAt(i, matrix);
+      const [r, g, b] = colormapFunc(mag);
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+    mesh.instanceColor.needsUpdate = true;
+  }, [instanceData, fieldSize, fieldCenter, vector_arrow_scale, vector_arrow_thickness, vector_normalize_arrows, colormapFunc]);
+  useEffect(() => {
+    return () => {
+      arrowGeometry.dispose();
+      material.dispose();
+    };
+  }, [arrowGeometry, material]);
+  if (loading) {
+    return /* @__PURE__ */ React.createElement(LoadingSpinner3, null);
+  }
+  if (error || !vector_field_id || !instanceData || instanceData.count === 0) {
+    return null;
+  }
+  const maxInstances = Math.max(instanceData.count, 1);
+  return /* @__PURE__ */ React.createElement("group", { position: [0, 0, 0] }, /* @__PURE__ */ React.createElement(
+    "instancedMesh",
+    {
+      ref: meshRef,
+      args: [arrowGeometry, material, maxInstances],
+      frustumCulled: false,
+      raycast: () => null
+    }
+  ), boxEdges.map((edge, i) => /* @__PURE__ */ React.createElement(
+    Line,
+    {
+      key: `edge-${i}`,
+      points: edge,
+      color: edgeColor,
+      lineWidth: edgeLineWidth,
+      transparent: true,
+      opacity: edgeOpacity,
+      raycast: () => null
+    }
+  )));
+};
+var VectorFieldVisualizerAdapter = ({
+  data,
+  assets,
+  selected
+}) => {
+  return /* @__PURE__ */ React.createElement(VectorFieldVisualizer, { data, assets, selected });
+};
+var vectorFieldVisualizerConfig = {
+  name: "vectorfield",
+  priority: 11,
+  // Only match VectorFieldRenderer component (pure renderer)
+  // Field components handle their own VectorField rendering via FieldVisualizer + field3DRenderData
+  matcher: (c) => c.name === "VectorFieldRenderer",
+  // Extract visualization data from component
+  // Note: Don't return null for empty vector_field_id - let the component handle it
+  // This ensures the visualizer is mounted and can react to subsequent updates
+  extractor: (comp) => {
+    return {
+      vector_field_id: getComponentValue(comp, "vector_field_id", ""),
+      resolution: getComponentValue(comp, "resolution", [64, 64, 64]),
+      min_bound: getComponentValue(comp, "min_bound", [-5, -5, -5]),
+      max_bound: getComponentValue(comp, "max_bound", [5, 5, 5]),
+      dimension: getComponentValue(comp, "dimension", "3D"),
+      colormap: getComponentValue(comp, "colormap", "viridis"),
+      vector_arrow_density: getComponentValue(comp, "vector_arrow_density", 16),
+      vector_arrow_scale: getComponentValue(comp, "vector_arrow_scale", 1),
+      vector_arrow_thickness: getComponentValue(comp, "vector_arrow_thickness", 1),
+      display_range: getComponentValue(comp, "display_range", [0, 1]),
+      vector_normalize_arrows: getComponentValue(comp, "vector_normalize_arrows", false)
+    };
+  },
+  component: VectorFieldVisualizerAdapter,
+  skipStandardGeometry: true,
+  labelOffset: 0.5
+};
+var VectorFieldVisualizer_default = VectorFieldVisualizer;
+
 // src/activate.tsx
 function findComponent(object, predicate) {
   const components = Array.isArray(object.components) ? object.components : [];
@@ -3554,6 +3590,11 @@ function createFieldRenderingObject(host) {
   };
 }
 function activateRenderingViewport(host) {
+  host.registerPass({
+    id: "witwin.volume.depth",
+    priority: -100,
+    component: VolumeDepthPrepass_default
+  });
   host.registerVisualizer({
     id: "witwin.volume.field",
     priority: 100,
@@ -3590,14 +3631,14 @@ function activateRenderingViewport(host) {
     }
   });
   host.registerVisualizer({
-    id: "witwin.volume.pointcloud",
+    id: "witwin.volume.vectorfield",
     priority: 90,
     skipStandardGeometry: true,
-    match: (object) => !!findComponent(object, pointCloudVisualizerConfig.matcher),
-    component: ({ object, selected, hovered }) => {
-      const component = findComponent(object, pointCloudVisualizerConfig.matcher);
-      const data = component ? pointCloudVisualizerConfig.extractor(component, object) : null;
-      return data ? /* @__PURE__ */ React.createElement(PointCloudVisualizer_default, { componentData: data, assets: host.assets, selected, hovered }) : null;
+    match: (object) => !!findComponent(object, vectorFieldVisualizerConfig.matcher),
+    component: ({ object, selected }) => {
+      const component = findComponent(object, vectorFieldVisualizerConfig.matcher);
+      const data = component ? vectorFieldVisualizerConfig.extractor(component, object) : null;
+      return data ? /* @__PURE__ */ React.createElement(VectorFieldVisualizer_default, { data, assets: host.assets, selected }) : null;
     }
   });
 }

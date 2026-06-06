@@ -19,11 +19,11 @@ from witwin_server.core.components.core import (
     string_field,
     vector3_field,
 )
-from witwin_server.core.components.volume_base import VolumeRendererBase
+from witwin_server.core.components.scalar_grid_resource import ScalarGridResourcePublisher
 
 
 @component(name="VolumeRenderer", category="Rendering/Volume")
-class VolumeRendererComponent(VolumeRendererBase):
+class VolumeRendererComponent(ScalarGridResourcePublisher):
     """Volume renderer component for 3D scalar field visualization using ray marching."""
 
     # ===== Volume Data Properties =====

@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "server"))
 sys.path.insert(0, str(ROOT / "plugins"))
 
-from wt_volume.components.point_cloud import PointCloudsComponent
 from wt_volume.components.sdf import SDFRendererComponent
 from wt_volume.components.volume import VolumeRendererComponent
 from witwin_server.core import Scene, SceneObject
@@ -108,7 +107,6 @@ def test_renderer_components_are_plugin_owned_while_field_stays_core() -> None:
     assert importlib.import_module("witwin_server.core.components.field_region").FieldComponent
     assert importlib.import_module("wt_volume.components.volume").VolumeRendererComponent
     assert importlib.import_module("wt_volume.components.sdf").SDFRendererComponent
-    assert importlib.import_module("wt_volume.components.point_cloud").PointCloudsComponent
 
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("witwin_server.core.components.volume_renderer")
@@ -116,6 +114,13 @@ def test_renderer_components_are_plugin_owned_while_field_stays_core() -> None:
         importlib.import_module("witwin_server.core.components.sdf_renderer")
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("witwin_server.core.components.point_clouds")
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("wt_volume.components.point_cloud")
+
+
+def test_binary_asset_handler_keeps_only_generic_asset_route() -> None:
+    assert BinaryAssetHandler.message_types == []
+    assert BinaryAssetHandler.dispatch_map == {}
 
 
 def test_canonical_asset_route_serves_registered_bytes_and_old_routes_are_gone(tmp_path: Path) -> None:
@@ -167,38 +172,6 @@ def test_volume_export_publishes_resource_ref_not_volume_id(tmp_path: Path) -> N
     ) in owner.scene.events
 
 
-def test_point_cloud_export_publishes_resource_ref_not_cloud_id(tmp_path: Path) -> None:
-    handler = _make_handler(tmp_path)
-
-    class _Server:
-        verbose = False
-        persistence = handler.server.persistence
-        handlers = {"binary_assets": handler}
-
-    owner = _Owner(_Server())
-    component = PointCloudsComponent()
-    component._owner = owner
-    component.set_points([[0, 0, 0], [1, 0, 0]], [0.25, 0.75])
-
-    result = component.export_point_cloud()
-    values = component.to_dict()["values"]
-
-    assert result.startswith("Cached point cloud:")
-    assert "cloud" in values
-    assert values["cloud"]["kind"] == "point_cloud"
-    assert values["cloud"]["format"] == POINT_CLOUD_FORMAT
-    assert "cloud_id" not in values
-    assert (
-        "component_updated",
-        {
-            "object_id": "resource-owner",
-            "component_name": "PointClouds",
-            "field_name": "cloud",
-            "value": values["cloud"],
-        },
-    ) in owner.scene.events
-
-
 def test_generate_buttons_publish_render_resource_refs_through_component_handler(tmp_path: Path) -> None:
     class _Server:
         verbose = False
@@ -221,7 +194,6 @@ def test_generate_buttons_publish_render_resource_refs_through_component_handler
     cases = [
         (VolumeRendererComponent(), "VolumeRenderer", "generate_test_volume", "volume", "volume"),
         (SDFRendererComponent(), "SDFRenderer", "generate_sdf_sphere", "volume", "volume"),
-        (PointCloudsComponent(), "PointClouds", "generate_random_points", "cloud", "point_cloud"),
     ]
 
     for component, component_name, button_name, ref_field, kind in cases:

@@ -46,7 +46,7 @@ interface FieldVisualizerProps {
 }
 
 // Create checkerboard texture for grid overlay
-function createCheckerboardTexture(width: number, height: number): THREE.DataTexture {
+function createCheckerboardTexture(width: number, height: number): ThreeTypes.DataTexture {
   const data = new Uint8Array(width * height * 4);
 
   for (let y = 0; y < height; y++) {
@@ -73,7 +73,7 @@ function createCheckerboardTexture(width: number, height: number): THREE.DataTex
 }
 
 interface FieldEdgeHitAreaProps {
-  edge: [THREE.Vector3Tuple, THREE.Vector3Tuple];
+  edge: [ThreeTypes.Vector3Tuple, ThreeTypes.Vector3Tuple];
   minBound: number[];
   maxBound: number[];
 }
@@ -532,7 +532,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
       {boxEdges.map((edge, i) => (
         <Line
           key={`edge-${i}`}
-          points={edge as [THREE.Vector3Tuple, THREE.Vector3Tuple]}
+          points={edge as [ThreeTypes.Vector3Tuple, ThreeTypes.Vector3Tuple]}
           color={edgeColor}
           lineWidth={edgeLineWidth}
           transparent
@@ -545,7 +545,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
       {boxEdges.map((edge, i) => (
         <FieldEdgeHitArea
           key={`edge-hit-${i}`}
-          edge={edge as [THREE.Vector3Tuple, THREE.Vector3Tuple]}
+          edge={edge as [ThreeTypes.Vector3Tuple, ThreeTypes.Vector3Tuple]}
           minBound={min_bound}
           maxBound={max_bound}
         />

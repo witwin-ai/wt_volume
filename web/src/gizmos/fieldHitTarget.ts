@@ -26,12 +26,12 @@ export function getWorldUnitsPerScreenPixel(
 ): number {
   if (viewportHeightPx <= 0) return 0;
 
-  if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+  if ((camera as ThreeTypes.OrthographicCamera).isOrthographicCamera) {
     const ortho = camera as ThreeTypes.OrthographicCamera;
     return Math.abs(ortho.top - ortho.bottom) / Math.max(ortho.zoom, EPSILON) / viewportHeightPx;
   }
 
-  if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+  if ((camera as ThreeTypes.PerspectiveCamera).isPerspectiveCamera) {
     const perspective = camera as ThreeTypes.PerspectiveCamera;
     const cameraWorldPosition = new THREE.Vector3();
     perspective.getWorldPosition(cameraWorldPosition);

@@ -55,7 +55,7 @@ export interface ViewportTool {
 export interface RenderResourceRef {
   assetId: string;
   uri: string;
-  kind: 'volume' | 'sdf' | 'point_cloud' | 'gaussian_splats' | 'mesh' | 'ray_batch' | string;
+  kind: 'volume' | 'sdf' | 'gaussian_splats' | 'mesh' | 'ray_batch' | string;
   format: string;
   byteLength?: number;
   contentHash?: string;
@@ -79,20 +79,10 @@ export interface VolumeTextureResource {
   dispose?: () => void;
 }
 
-export interface PointCloudResource {
-  ref: RenderResourceRef;
-  positions: Float32Array;
-  heat: Float32Array;
-  extraData: Array<Record<string, unknown>>;
-  count: number;
-  dispose?: () => void;
-}
-
 export interface ViewportAssetsApi {
   resolve(ref: RenderResourceRef | string): string;
   fetchBinary(ref: RenderResourceRef | string, options?: BinaryFetchOptions): Promise<ArrayBuffer>;
   loadVolume(ref: RenderResourceRef, options?: BinaryFetchOptions): Promise<VolumeTextureResource>;
-  loadPointCloud(ref: RenderResourceRef, options?: BinaryFetchOptions): Promise<PointCloudResource>;
   release(resource: { dispose?: () => void }): void;
 }
 
