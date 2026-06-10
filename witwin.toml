@@ -1,7 +1,7 @@
 id = "witwin.volume"
-name = "WiTwin Volume"
+name = "Volume"
 version = "0.1.0"
-description = "First-party viewport renderers for volume, SDF, and field presentation."
+description = "Viewport renderers for volume, SDF, and field data."
 enabled = true
 repository = "https://github.com/witwin-ai/wt_volume"
 
