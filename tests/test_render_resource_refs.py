@@ -172,6 +172,27 @@ def test_volume_export_publishes_resource_ref_not_volume_id(tmp_path: Path) -> N
     ) in owner.scene.events
 
 
+def test_volume_resource_ref_round_trips_through_scene_properties() -> None:
+    ref = RenderResourceRef(
+        asset_id="volume-1",
+        uri="/scenes/default/assets/volume-1",
+        kind="volume",
+        format=VOLUME_FLOAT32_FORMAT,
+        byte_length=32,
+        content_hash="sha256:abc",
+        shape=[2, 2, 2],
+        attributes={"dtype": "float32"},
+    ).to_dict()
+    component = VolumeRendererComponent()
+    component._publish_volume_ref(ref)
+    props = component.to_properties_dict()["properties"]
+
+    loaded = VolumeRendererComponent()
+    loaded.from_properties_dict(props)
+
+    assert loaded.to_dict()["values"]["volume"] == ref
+
+
 def test_generate_buttons_publish_render_resource_refs_through_component_handler(tmp_path: Path) -> None:
     class _Server:
         verbose = False
