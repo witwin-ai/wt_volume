@@ -3,6 +3,7 @@ import type * as ThreeTypes from 'three';
 import { React, THREE, useCallback, useRef, useState, useThree, useFrame } from '../runtime';
 import type { ThreeEvent } from '../runtime';
 import { screenConstantScale } from './fieldHitTarget';
+import { axisDragPlaneNormal, intersectDragPlane } from './dragPlane';
 
 export type HandleType = 'corner' | 'edge' | 'face';
 export type AxisConstraint = 'x' | 'y' | 'z' | 'xy' | 'xz' | 'yz' | 'xyz';
@@ -68,30 +69,23 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
     camera.getWorldDirection(cameraDirection);
 
     let planeNormal: ThreeTypes.Vector3;
+    // The field's axes in world space: its parent may be rotated.
+    const parentWorld = meshRef.current?.parent?.matrixWorld;
+    const worldAxis = (x: number, y: number, z: number) => {
+      const v = new THREE.Vector3(x, y, z);
+      return parentWorld ? v.transformDirection(parentWorld) : v;
+    };
 
     // Choose plane based on axis constraint and camera
     switch (axis) {
       case 'x':
-        // For X-only movement, use YZ plane
-        planeNormal = new THREE.Vector3(0, 0, 1);
-        // If camera is looking along Z, use Y plane instead
-        if (Math.abs(cameraDirection.z) > 0.9) {
-          planeNormal = new THREE.Vector3(0, 1, 0);
-        }
+        planeNormal = axisDragPlaneNormal(worldAxis(1, 0, 0), cameraDirection);
         break;
       case 'y':
-        // For Y-only movement, use XZ plane
-        planeNormal = new THREE.Vector3(0, 0, 1);
-        if (Math.abs(cameraDirection.z) > 0.9) {
-          planeNormal = new THREE.Vector3(1, 0, 0);
-        }
+        planeNormal = axisDragPlaneNormal(worldAxis(0, 1, 0), cameraDirection);
         break;
       case 'z':
-        // For Z-only movement, use XY plane
-        planeNormal = new THREE.Vector3(0, 1, 0);
-        if (Math.abs(cameraDirection.y) > 0.9) {
-          planeNormal = new THREE.Vector3(1, 0, 0);
-        }
+        planeNormal = axisDragPlaneNormal(worldAxis(0, 0, 1), cameraDirection);
         break;
       case 'xy':
         // For XY movement, use Z plane
@@ -127,11 +121,7 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
 
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, camera);
-
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(planeRef.current, intersection);
-
-    return intersection;
+    return intersectDragPlane(raycaster.ray, planeRef.current);
   }, [camera, gl]);
 
   // Apply axis constraints to movement

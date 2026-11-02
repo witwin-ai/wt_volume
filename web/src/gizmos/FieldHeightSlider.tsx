@@ -3,6 +3,7 @@ import type * as ThreeTypes from 'three';
 import { React, THREE, useCallback, useMemo, useRef, useState, useThree, useFrame, Line, Text } from '../runtime';
 import type { ThreeEvent } from '../runtime';
 import { fieldGizmoUnit, screenConstantScale } from './fieldHitTarget';
+import { axisDragPlaneNormal, intersectDragPlane } from './dragPlane';
 
 const LABEL_PX = 12;
 
@@ -140,33 +141,14 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
     const cameraDirection = new THREE.Vector3();
     camera.getWorldDirection(cameraDirection);
 
-    let planeNormal: ThreeTypes.Vector3;
-
-    switch (sliderConfig.axis) {
-      case 'x':
-        planeNormal = new THREE.Vector3(0, 0, 1);
-        if (Math.abs(cameraDirection.z) > 0.9) {
-          planeNormal = new THREE.Vector3(0, 1, 0);
-        }
-        break;
-      case 'y':
-        planeNormal = new THREE.Vector3(0, 0, 1);
-        if (Math.abs(cameraDirection.z) > 0.9) {
-          planeNormal = new THREE.Vector3(1, 0, 0);
-        }
-        break;
-      case 'z':
-        planeNormal = new THREE.Vector3(0, 1, 0);
-        if (Math.abs(cameraDirection.y) > 0.9) {
-          planeNormal = new THREE.Vector3(1, 0, 0);
-        }
-        break;
-      default:
-        planeNormal = cameraDirection.clone().negate();
-    }
+    // The slider axis in world space: the field's parent may be rotated.
+    const axisWorld = sliderConfig.axisDir.clone();
+    const parentWorld = groupRef.current?.matrixWorld;
+    if (parentWorld) axisWorld.transformDirection(parentWorld);
+    const planeNormal = axisDragPlaneNormal(axisWorld, cameraDirection);
 
     return new THREE.Plane(planeNormal, -planeNormal.dot(point));
-  }, [camera, sliderConfig.axis]);
+  }, [camera, sliderConfig.axisDir]);
 
   // Ray intersection with plane
   const intersectPlane = useCallback((event: PointerEvent): ThreeTypes.Vector3 | null => {
@@ -180,11 +162,7 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
 
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(mouse, camera);
-
-    const intersection = new THREE.Vector3();
-    raycaster.ray.intersectPlane(planeRef.current, intersection);
-
-    return intersection;
+    return intersectDragPlane(raycaster.ray, planeRef.current);
   }, [camera, gl]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
