@@ -67,6 +67,163 @@ function checkVolumeSupport(resolution) {
   return { supported: true, maxSize };
 }
 
+// src/field/fieldTextures.ts
+function createAxisTexture(coords, lo, hi) {
+  const span = hi - lo || 1;
+  const data = Float32Array.from(coords, (c) => (c - lo) / span);
+  const texture = new THREE.DataTexture(data, data.length, 1, THREE.RedFormat, THREE.FloatType);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+function hasAxes(source) {
+  const axes = source.axisCoords;
+  return !!axes && axes.length === 3 && axes.every((a, i) => Array.isArray(a) && a.length === source.resolution[i] && a.length >= 2);
+}
+var placeholders = null;
+function placeholderTextures() {
+  if (!placeholders) {
+    const volume = new THREE.Data3DTexture(new Float32Array(1), 1, 1, 1);
+    volume.format = THREE.RedFormat;
+    volume.type = THREE.FloatType;
+    volume.needsUpdate = true;
+    placeholders = { volume, axis: createAxisTexture([0, 1], 0, 1) };
+  }
+  return placeholders;
+}
+function createFieldUniforms() {
+  const p = placeholderTextures();
+  return {
+    u_fieldRe: { value: p.volume },
+    u_fieldIm: { value: p.volume },
+    u_fieldComplex: { value: false },
+    u_fieldUniformGrid: { value: true },
+    u_fieldAxisX: { value: p.axis },
+    u_fieldAxisY: { value: p.axis },
+    u_fieldAxisZ: { value: p.axis },
+    u_fieldQuantity: { value: 0 },
+    u_fieldPhase: { value: 0 }
+  };
+}
+function bindFieldUniforms(uniforms, textures, quantity = "value", phase = 0) {
+  const p = placeholderTextures();
+  uniforms.u_fieldRe.value = textures.re;
+  uniforms.u_fieldIm.value = textures.im ?? p.volume;
+  uniforms.u_fieldComplex.value = textures.im !== null;
+  uniforms.u_fieldUniformGrid.value = textures.axes === null;
+  uniforms.u_fieldAxisX.value = textures.axes?.[0] ?? p.axis;
+  uniforms.u_fieldAxisY.value = textures.axes?.[1] ?? p.axis;
+  uniforms.u_fieldAxisZ.value = textures.axes?.[2] ?? p.axis;
+  uniforms.u_fieldQuantity.value = quantity === "magnitude" ? 1 : 0;
+  uniforms.u_fieldPhase.value = phase;
+}
+function disposeTextures(t) {
+  if (!t) return;
+  t.re.dispose();
+  t.im?.dispose();
+  t.axes?.forEach((a) => a.dispose());
+}
+function useFieldTextures(assets, source, enabled) {
+  const [state, setState] = useState({ textures: null, loading: false, error: null });
+  const { volume, volumeIm, resolution, axisCoords, minBound, maxBound } = source;
+  const axesKey = hasAxes(source) ? JSON.stringify(axisCoords) + JSON.stringify([minBound, maxBound]) : "";
+  useEffect(() => {
+    if (!enabled || !volume) {
+      setState({ textures: null, loading: false, error: null });
+      return;
+    }
+    let cancelled = false;
+    let loaded = null;
+    const support = checkVolumeSupport(resolution);
+    if (!support.supported) {
+      setState({ textures: null, loading: false, error: support.message || "Volume not supported" });
+      return;
+    }
+    setState({ textures: null, loading: true, error: null });
+    (async () => {
+      try {
+        const [re, im] = await Promise.all([
+          loadVolumeTexture(assets, volume, resolution),
+          volumeIm ? loadVolumeTexture(assets, volumeIm, resolution) : Promise.resolve(null)
+        ]);
+        const axes = axesKey ? [0, 1, 2].map((a) => createAxisTexture(axisCoords[a], minBound[a], maxBound[a])) : null;
+        loaded = { re: re.texture, im: im?.texture ?? null, axes, resolution: re.resolution };
+        if (cancelled) disposeTextures(loaded);
+        else setState({ textures: loaded, loading: false, error: null });
+      } catch (err) {
+        console.error("[wt_volume] Failed to load field volume:", err);
+        if (!cancelled) setState({ textures: null, loading: false, error: err?.message || "Failed to load volume" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      disposeTextures(loaded);
+    };
+  }, [assets, enabled, volume?.assetId, volume?.uri, volumeIm?.assetId, volumeIm?.uri, axesKey]);
+  return state;
+}
+
+// src/field/sampling.ts
+var FIELD_SAMPLING_GLSL = (
+  /* glsl */
+  `
+uniform sampler3D u_fieldRe;
+uniform sampler3D u_fieldIm;
+uniform bool u_fieldComplex;
+uniform bool u_fieldUniformGrid;
+uniform sampler2D u_fieldAxisX;
+uniform sampler2D u_fieldAxisY;
+uniform sampler2D u_fieldAxisZ;
+uniform int u_fieldQuantity; // 0: value (Re at phase for complex fields), 1: magnitude
+uniform float u_fieldPhase;
+
+float fieldAxisCoord(sampler2D axis, float v) {
+  int n = textureSize(axis, 0).x;
+  float first = texelFetch(axis, ivec2(0, 0), 0).r;
+  float last = texelFetch(axis, ivec2(n - 1, 0), 0).r;
+  if (v <= first) return 0.5 / float(n);
+  if (v >= last) return (float(n) - 0.5) / float(n);
+  int lo = 0;
+  int hi = n - 1;
+  // 2^16 covers any axis texture WebGL2 allows.
+  for (int it = 0; it < 16; ++it) {
+    if (hi - lo <= 1) break;
+    int mid = (lo + hi) / 2;
+    if (texelFetch(axis, ivec2(mid, 0), 0).r <= v) lo = mid; else hi = mid;
+  }
+  float a = texelFetch(axis, ivec2(lo, 0), 0).r;
+  float b = texelFetch(axis, ivec2(lo + 1, 0), 0).r;
+  float t = (v - a) / max(b - a, 1e-12);
+  return (float(lo) + t + 0.5) / float(n);
+}
+
+vec3 fieldTexCoord(vec3 p) {
+  if (u_fieldUniformGrid) return p;
+  return vec3(fieldAxisCoord(u_fieldAxisX, p.x), fieldAxisCoord(u_fieldAxisY, p.y), fieldAxisCoord(u_fieldAxisZ, p.z));
+}
+
+float fieldValue(vec3 p) {
+  vec3 tc = fieldTexCoord(p);
+  float re = texture(u_fieldRe, tc).r;
+  if (!u_fieldComplex) return u_fieldQuantity == 1 ? abs(re) : re;
+  float im = texture(u_fieldIm, tc).r;
+  if (u_fieldQuantity == 1) return length(vec2(re, im));
+  return re * cos(u_fieldPhase) + im * sin(u_fieldPhase);
+}
+
+// Value -> [0,1] colormap index. Values above vmax clamp; callers decide what
+// to do below vmin (slices and volumes treat it as empty).
+float fieldNormalize(float v, float vmin, float vmax, bool logScale) {
+  float n = (min(v, vmax) - vmin) / (vmax - vmin + 0.0001);
+  n = clamp(n, 0.0, 1.0);
+  // log10(1 + 9n) maps 0 -> 0 and 1 -> 1 while spreading small values.
+  if (logScale) n = log(1.0 + 9.0 * n) / log(10.0);
+  return n;
+}
+`
+);
+
 // src/shaders/volumeShaders.ts
 var volumeVertexShader = `
 uniform mat4 modelMatrixInverse;
@@ -91,8 +248,9 @@ precision highp float;
 precision highp sampler3D;
 precision highp sampler2D;
 
+${FIELD_SAMPLING_GLSL}
+
 // Uniforms
-uniform sampler3D volumeTexture;
 uniform sampler2D colormapTexture;
 uniform sampler2D blueNoiseTexture;  // Blue noise for stochastic jittering
 uniform float opacityScale;
@@ -125,7 +283,7 @@ float sampleVolume(vec3 pos) {
   if (any(lessThan(pos, vec3(0.0))) || any(greaterThan(pos, vec3(1.0)))) {
     return 0.0;
   }
-  return texture(volumeTexture, pos).r;
+  return fieldValue(pos);
 }
 
 // Apply transfer function: value -> RGBA
@@ -654,11 +812,6 @@ var VolumeVisualizer = ({
 }) => {
   const { camera, gl } = useThree();
   const absorptionScale = 1;
-  const [volumeTexture, setVolumeTexture] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [textureResolution, setTextureResolution] = useState([128, 128, 128]);
-  const volumeTextureRef = useRef(null);
   const colormapTextureRef = useRef(null);
   const meshRef = useRef(null);
   const drawingBufferSize = useMemo(() => new THREE.Vector2(), []);
@@ -675,7 +828,10 @@ var VolumeVisualizer = ({
     slice_plane = "XZ",
     slice_position = 0.5,
     min_bound,
-    max_bound
+    max_bound,
+    volume_im = null,
+    axis_coords = null,
+    axis_bounds
   } = volumeData;
   const value_min = display_range[0];
   const value_max = display_range[1];
@@ -699,50 +855,20 @@ var VolumeVisualizer = ({
     }
     return [0, 0, 0];
   }, [min_bound, max_bound]);
-  useEffect(() => {
-    if (!volume) {
-      setVolumeTexture(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    const loadVolume = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const loadResolution = resolution;
-        const support = checkVolumeSupport(loadResolution);
-        if (!support.supported) {
-          throw new Error(support.message || "Volume not supported");
-        }
-        if (volumeTextureRef.current) {
-          volumeTextureRef.current.dispose();
-          volumeTextureRef.current = null;
-        }
-        const result = await loadVolumeTexture(
-          assets,
-          volume,
-          loadResolution,
-          void 0
-        );
-        volumeTextureRef.current = result.texture;
-        setVolumeTexture(result.texture);
-        setTextureResolution(result.resolution);
-        setLoading(false);
-      } catch (err) {
-        console.error("[VolumeVisualizer] Failed to load volume:", err);
-        setError(err.message || "Failed to load volume");
-        setLoading(false);
-      }
-    };
-    loadVolume();
-    return () => {
-      if (volumeTextureRef.current) {
-        volumeTextureRef.current.dispose();
-        volumeTextureRef.current = null;
-      }
-    };
-  }, [assets, volume?.assetId, volume?.uri]);
+  const normBounds = axis_bounds ?? (min_bound && max_bound ? [min_bound, max_bound] : null);
+  const { textures, loading, error } = useFieldTextures(
+    assets,
+    {
+      volume: volume ?? null,
+      volumeIm: volume_im,
+      resolution,
+      axisCoords: normBounds ? axis_coords : null,
+      minBound: normBounds?.[0] ?? [0, 0, 0],
+      maxBound: normBounds?.[1] ?? [1, 1, 1]
+    },
+    true
+  );
+  const textureResolution = textures?.resolution ?? [128, 128, 128];
   useEffect(() => {
     if (colormapTextureRef.current) {
       colormapTextureRef.current.dispose();
@@ -768,7 +894,7 @@ var VolumeVisualizer = ({
     }
   }, [slice_plane]);
   const volumeMaterial = useMemo(() => {
-    if (!volumeTexture || !colormapTextureRef.current) return null;
+    if (!textures || !colormapTextureRef.current) return null;
     const modelMatrixInverse = new THREE.Matrix4();
     const dummyDepth = new THREE.DataTexture(new Uint8Array([255]), 1, 1, THREE.RedFormat);
     dummyDepth.needsUpdate = true;
@@ -776,7 +902,7 @@ var VolumeVisualizer = ({
     const blueNoiseTexture2 = getBlueNoiseTexture();
     return new THREE.ShaderMaterial({
       uniforms: {
-        volumeTexture: { value: volumeTexture },
+        ...createFieldUniforms(),
         colormapTexture: { value: colormapTextureRef.current },
         blueNoiseTexture: { value: blueNoiseTexture2 },
         modelMatrixInverse: { value: modelMatrixInverse },
@@ -807,7 +933,7 @@ var VolumeVisualizer = ({
       depthWrite: false,
       blending: THREE.NormalBlending
     });
-  }, [volumeTexture]);
+  }, [textures]);
   useEffect(() => {
     return () => {
       if (volumeMaterial) {
@@ -843,6 +969,7 @@ var VolumeVisualizer = ({
     volumeMaterial.uniforms.viewportSize.value.copy(drawingBufferSize);
     volumeMaterial.uniforms.cameraNear.value = camera.near;
     volumeMaterial.uniforms.cameraFar.value = camera.far;
+    if (textures) bindFieldUniforms(volumeMaterial.uniforms, textures, "magnitude");
     const depthTexture = getVolumeDepthTexture();
     if (depthTexture) {
       volumeMaterial.uniforms.sceneDepthTexture.value = depthTexture;
@@ -1615,7 +1742,8 @@ precision highp float;
 precision highp sampler3D;
 precision highp sampler2D;
 
-uniform sampler3D volumeTexture;
+${FIELD_SAMPLING_GLSL}
+
 uniform sampler2D colormapTexture;
 uniform int slicePlane;      // 0=XY, 1=XZ, 2=YZ
 uniform float slicePosition; // 0-1 normalized position along perpendicular axis
@@ -1623,50 +1751,36 @@ uniform float opacity;
 uniform float valueMin;
 uniform float valueMax;
 uniform bool logColormap;    // Apply logarithmic scaling to colormap
+uniform bool discardBelowMin; // false for signed quantities, whose negative half is data
 
 varying vec2 vUv;
 
 void main() {
-  // Build 3D texture coordinate based on slice plane
+  // Build the normalized field position based on slice plane
   // Note: PlaneGeometry rotation affects UV->world mapping
   // XZ plane rotates -90 deg around X: UV.y direction becomes -Z
   // YZ plane rotates 90 deg around Y: UV.x direction becomes -Z
-  vec3 texCoord;
+  vec3 p;
 
   if (slicePlane == 0) {
     // XY plane - slice along Z axis
-    // UV.x -> X, UV.y -> Y, slicePosition -> Z
-    texCoord = vec3(vUv.x, vUv.y, slicePosition);
+    p = vec3(vUv.x, vUv.y, slicePosition);
   } else if (slicePlane == 1) {
-    // XZ plane - slice along Y axis
-    // UV.x -> X, UV.y -> -Z (flip Z), slicePosition -> Y
-    texCoord = vec3(vUv.x, slicePosition, 1.0 - vUv.y);
+    // XZ plane - slice along Y axis (flip Z)
+    p = vec3(vUv.x, slicePosition, 1.0 - vUv.y);
   } else {
-    // YZ plane - slice along X axis
-    // UV.x -> -Z (flip Z), UV.y -> Y, slicePosition -> X
-    texCoord = vec3(slicePosition, vUv.y, 1.0 - vUv.x);
+    // YZ plane - slice along X axis (flip Z)
+    p = vec3(slicePosition, vUv.y, 1.0 - vUv.x);
   }
 
-  // Sample volume
-  float value = texture(volumeTexture, texCoord).r;
+  float value = fieldValue(p);
 
   // Values below min are transparent, values above max are clamped to max
-  if (value < valueMin) {
+  if (discardBelowMin && value < valueMin) {
     discard;
   }
-  float clampedValue = min(value, valueMax);
+  float normalized = fieldNormalize(value, valueMin, valueMax, logColormap);
 
-  // Normalize value to 0-1 based on threshold range
-  float normalized = (clampedValue - valueMin) / (valueMax - valueMin + 0.0001);
-
-  // Apply logarithmic scaling if enabled (compresses large dynamic range)
-  if (logColormap) {
-    // Log scaling: log10(1 + 9*x) / log10(10) = log10(1 + 9*x)
-    // This maps 0->0, 1->1 with logarithmic distribution
-    normalized = log(1.0 + 9.0 * normalized) / log(10.0);
-  }
-
-  // Sample colormap
   vec3 color = texture2D(colormapTexture, vec2(normalized, 0.5)).rgb;
 
   gl_FragColor = vec4(color, opacity);
@@ -1811,54 +1925,42 @@ var FieldVisualizer = ({
     plane_position = 0.5,
     plane_opacity = 1,
     volume,
+    volume_im = null,
+    axis_coords = null,
+    field_quantity = "value",
+    field_phase = 0,
     resolution = [128, 128, 128],
     display_range = [0, 1]
   } = fieldData2;
-  const valueMin = display_range[0];
+  const complexField = !!volume_im;
+  const signed = complexField && field_quantity !== "magnitude";
+  const valueMin = signed ? -display_range[1] : display_range[0];
   const valueMax = display_range[1];
-  const [volumeTexture, setVolumeTexture] = useState(null);
-  const volumeTextureRef = useRef(null);
   const colormapTextureRef = useRef(null);
   const sliceMeshRef = useRef(null);
+  const { textures } = useFieldTextures(
+    assets,
+    {
+      volume: volume ?? null,
+      volumeIm: volume_im ?? null,
+      resolution,
+      axisCoords: axis_coords ?? null,
+      minBound: min_bound,
+      maxBound: max_bound
+    },
+    render_mode === "Slices"
+  );
   const planeParamsRef = useRef({
     slicePlaneInt: 1,
     slicePosition: plane_position,
     opacity: plane_opacity,
     valueMin,
     valueMax,
-    logColormap: log_colormap
+    logColormap: log_colormap,
+    signed,
+    quantity: field_quantity,
+    phase: field_phase
   });
-  useEffect(() => {
-    if (!volume || render_mode !== "Slices") {
-      return;
-    }
-    const loadVolume = async () => {
-      try {
-        const loadResolution = resolution;
-        const support = checkVolumeSupport(loadResolution);
-        if (!support.supported) {
-          console.error("[FieldVisualizer] Volume not supported:", support.message);
-          return;
-        }
-        if (volumeTextureRef.current) {
-          volumeTextureRef.current.dispose();
-          volumeTextureRef.current = null;
-        }
-        const result = await loadVolumeTexture(assets, volume, loadResolution);
-        volumeTextureRef.current = result.texture;
-        setVolumeTexture(result.texture);
-      } catch (err) {
-        console.error("[FieldVisualizer] Failed to load volume:", err);
-      }
-    };
-    loadVolume();
-    return () => {
-      if (volumeTextureRef.current) {
-        volumeTextureRef.current.dispose();
-        volumeTextureRef.current = null;
-      }
-    };
-  }, [assets, volume?.assetId, volume?.uri, render_mode]);
   useEffect(() => {
     if (colormapTextureRef.current) {
       colormapTextureRef.current.dispose();
@@ -1891,21 +1993,27 @@ var FieldVisualizer = ({
     opacity: plane_opacity,
     valueMin,
     valueMax,
-    logColormap: log_colormap
+    logColormap: log_colormap,
+    signed,
+    quantity: field_quantity,
+    phase: field_phase
   };
   const planeSliceMaterial = useMemo(() => {
-    if (!volumeTexture || !colormapTextureRef.current) return null;
+    if (!textures || !colormapTextureRef.current) return null;
+    const uniforms = {
+      ...createFieldUniforms(),
+      colormapTexture: { value: colormapTextureRef.current },
+      slicePlane: { value: slicePlaneInt },
+      slicePosition: { value: effectiveSlicePosition },
+      opacity: { value: plane_opacity },
+      valueMin: { value: valueMin },
+      valueMax: { value: valueMax },
+      logColormap: { value: log_colormap },
+      discardBelowMin: { value: !signed }
+    };
+    bindFieldUniforms(uniforms, textures, field_quantity, field_phase);
     return new THREE.ShaderMaterial({
-      uniforms: {
-        volumeTexture: { value: volumeTexture },
-        colormapTexture: { value: colormapTextureRef.current },
-        slicePlane: { value: slicePlaneInt },
-        slicePosition: { value: effectiveSlicePosition },
-        opacity: { value: plane_opacity },
-        valueMin: { value: valueMin },
-        valueMax: { value: valueMax },
-        logColormap: { value: log_colormap }
-      },
+      uniforms,
       vertexShader: planeSliceVertexShader,
       fragmentShader: planeSliceFragmentShader,
       side: THREE.DoubleSide,
@@ -1913,18 +2021,22 @@ var FieldVisualizer = ({
       depthWrite: true,
       alphaTest: 0.01
     });
-  }, [volumeTexture]);
+  }, [textures]);
+  useEffect(() => () => planeSliceMaterial?.dispose(), [planeSliceMaterial]);
   useFrame(() => {
-    if (!sliceMeshRef.current || !planeSliceMaterial) return;
+    if (!sliceMeshRef.current || !planeSliceMaterial || !textures) return;
     const params = planeParamsRef.current;
-    planeSliceMaterial.uniforms.slicePlane.value = params.slicePlaneInt;
-    planeSliceMaterial.uniforms.slicePosition.value = params.slicePosition;
-    planeSliceMaterial.uniforms.opacity.value = params.opacity;
-    planeSliceMaterial.uniforms.valueMin.value = params.valueMin;
-    planeSliceMaterial.uniforms.valueMax.value = params.valueMax;
-    planeSliceMaterial.uniforms.logColormap.value = params.logColormap;
+    const u = planeSliceMaterial.uniforms;
+    u.slicePlane.value = params.slicePlaneInt;
+    u.slicePosition.value = params.slicePosition;
+    u.opacity.value = params.opacity;
+    u.valueMin.value = params.valueMin;
+    u.valueMax.value = params.valueMax;
+    u.logColormap.value = params.logColormap;
+    u.discardBelowMin.value = !params.signed;
+    bindFieldUniforms(u, textures, params.quantity, params.phase);
     if (colormapTextureRef.current) {
-      planeSliceMaterial.uniforms.colormapTexture.value = colormapTextureRef.current;
+      u.colormapTexture.value = colormapTextureRef.current;
     }
   });
   const boxEdges = useMemo(() => {
@@ -2205,6 +2317,10 @@ var fieldVisualizerConfig = {
     plane_opacity: getComponentValue(comp, "plane_opacity", 1),
     // Volume data for shader-based rendering (unified)
     volume: getComponentValue(comp, "volume", null),
+    volume_im: getComponentValue(comp, "volume_im", null),
+    axis_coords: getComponentValue(comp, "axis_coords", null),
+    field_quantity: getComponentValue(comp, "field_quantity", "value"),
+    field_phase: getComponentValue(comp, "field_phase", 0),
     resolution: getComponentValue(comp, "resolution", [128, 128, 128]),
     // Normalized display range (0-1)
     display_range: getComponentValue(comp, "display_range", [0, 1])
@@ -3556,6 +3672,10 @@ function createFieldRenderingObject(host) {
     ];
     const sharedVolumeData = {
       volume,
+      volume_im: data.volume_im ?? null,
+      axis_coords: data.axis_coords ?? null,
+      // Bounds for normalising axis_coords only; the group below places and scales the box.
+      axis_bounds: [min, max],
       resolution: getComponentValue(component, "resolution", [128, 128, 128]),
       colormap: data.colormap || "inferno",
       log_colormap: data.log_colormap || false,

@@ -1,11 +1,18 @@
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, '..');
-const repoRoot = path.resolve(packageRoot, '..', '..', '..');
-const requireFromStudio = createRequire(path.join(repoRoot, 'studio', 'package.json'));
+// esbuild comes from a Studio checkout. Plugin repos normally sit next to it
+// (E:\Code\witwin-plugins\<id> beside E:\Code\witwin-studio); WITWIN_STUDIO_DIR
+// points at another studio/ folder, for example a worktree.
+const codeRoot = path.resolve(packageRoot, '..', '..', '..');
+const studioDir = process.env.WITWIN_STUDIO_DIR
+  ?? [path.join(codeRoot, 'witwin-studio', 'studio'), path.join(codeRoot, 'studio')].find((dir) => existsSync(path.join(dir, 'package.json')));
+if (!studioDir) throw new Error('[wt_volume] Studio checkout not found; set WITWIN_STUDIO_DIR to its studio/ folder');
+const requireFromStudio = createRequire(path.join(studioDir, 'package.json'));
 const esbuild = requireFromStudio('esbuild');
 const args = new Set(process.argv.slice(2));
 const watch = args.has('--watch');

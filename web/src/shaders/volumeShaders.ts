@@ -3,6 +3,7 @@
  */
 import type * as ThreeTypes from 'three';
 import { THREE } from '../runtime';
+import { FIELD_SAMPLING_GLSL } from '../field/sampling';
 
 /**
  * Vertex shader for volume ray marching
@@ -35,8 +36,9 @@ precision highp float;
 precision highp sampler3D;
 precision highp sampler2D;
 
+${FIELD_SAMPLING_GLSL}
+
 // Uniforms
-uniform sampler3D volumeTexture;
 uniform sampler2D colormapTexture;
 uniform sampler2D blueNoiseTexture;  // Blue noise for stochastic jittering
 uniform float opacityScale;
@@ -69,7 +71,7 @@ float sampleVolume(vec3 pos) {
   if (any(lessThan(pos, vec3(0.0))) || any(greaterThan(pos, vec3(1.0)))) {
     return 0.0;
   }
-  return texture(volumeTexture, pos).r;
+  return fieldValue(pos);
 }
 
 // Apply transfer function: value -> RGBA

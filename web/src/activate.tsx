@@ -74,6 +74,10 @@ function createFieldRenderingObject(host: ViewportHost): ReactTypes.FC<{
     ];
     const sharedVolumeData = {
       volume,
+      volume_im: data.volume_im ?? null,
+      axis_coords: data.axis_coords ?? null,
+      // Bounds for normalising axis_coords only; the group below places and scales the box.
+      axis_bounds: [min, max] as [number[], number[]],
       resolution: getComponentValue(component, 'resolution', [128, 128, 128]),
       colormap: data.colormap || 'inferno',
       log_colormap: data.log_colormap || false,

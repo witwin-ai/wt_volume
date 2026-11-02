@@ -1,7 +1,7 @@
 import type ReactTypes from 'react';
 import type * as ThreeTypes from 'three';
-import { React, THREE, useEffect, useMemo, useRef, useState, useThree, useFrame, Html } from '../runtime';
-import { loadVolumeTexture, checkVolumeSupport } from '../assets/volumeTexture';
+import { React, THREE, useEffect, useMemo, useRef, useThree, useFrame, Html } from '../runtime';
+import { bindFieldUniforms, createFieldUniforms, useFieldTextures } from '../field/fieldTextures';
 import {
   volumeVertexShader,
   volumeFragmentShader,
@@ -47,6 +47,12 @@ interface VolumeComponentData {
   // Field bounds (for Field-like components)
   min_bound?: number[];
   max_bound?: number[];
+  // Complex / non-uniform field data (Field components); see field/fieldTextures.
+  volume_im?: RenderResourceRef | null;
+  axis_coords?: number[][] | null;
+  // [min, max] the axis_coords are normalised against, when the caller already
+  // places and scales the box (so min_bound/max_bound are not passed).
+  axis_bounds?: [number[], number[]];
 }
 
 interface VolumeVisualizerProps {
@@ -65,13 +71,6 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
   const { camera, gl } = useThree();
   const absorptionScale = 1.0;
 
-  const [volumeTexture, setVolumeTexture] = useState<ThreeTypes.Data3DTexture | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Store actual texture resolution (from loaded data, not UI)
-  const [textureResolution, setTextureResolution] = useState<[number, number, number]>([128, 128, 128]);
-
-  const volumeTextureRef = useRef<ThreeTypes.Data3DTexture | null>(null);
   const colormapTextureRef = useRef<ThreeTypes.DataTexture | null>(null);
   const meshRef = useRef<ThreeTypes.Mesh | null>(null);
   const drawingBufferSize = useMemo(() => new THREE.Vector2(), []);
@@ -90,7 +89,10 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
     slice_plane = 'XZ',
     slice_position = 0.5,
     min_bound,
-    max_bound
+    max_bound,
+    volume_im = null,
+    axis_coords = null,
+    axis_bounds
   } = volumeData;
 
   // Volume data is already normalized to 0-1 in backend (set_volume_data)
@@ -121,67 +123,23 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
     return [0, 0, 0] as [number, number, number];  // Default center
   }, [min_bound, max_bound]);
 
-  // Load volume data when the resource ref changes (not when resolution changes)
-  useEffect(() => {
-    if (!volume) {
-      // No volume to load - clear texture but don't return null
-      setVolumeTexture(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-
-    const loadVolume = async () => {
-      setLoading(true);
-      setError(null);
-
-      try {
-        // Use current resolution for loading (will be stored as actual texture resolution)
-        const loadResolution = resolution as [number, number, number];
-
-        // Check WebGL2 support
-        const support = checkVolumeSupport(loadResolution);
-        if (!support.supported) {
-          throw new Error(support.message || 'Volume not supported');
-        }
-
-        // Cleanup old texture
-        if (volumeTextureRef.current) {
-          volumeTextureRef.current.dispose();
-          volumeTextureRef.current = null;
-        }
-
-        // Load volume
-        const result = await loadVolumeTexture(
-          assets,
-          volume,
-          loadResolution,
-          undefined
-        );
-
-        volumeTextureRef.current = result.texture;
-        setVolumeTexture(result.texture);
-        // Store the actual texture resolution for shader calculations
-        setTextureResolution(result.resolution);
-        setLoading(false);
-
-      } catch (err: any) {
-        console.error('[VolumeVisualizer] Failed to load volume:', err);
-        setError(err.message || 'Failed to load volume');
-        setLoading(false);
-      }
-    };
-
-    loadVolume();
-
-    // Cleanup on unmount
-    return () => {
-      if (volumeTextureRef.current) {
-        volumeTextureRef.current.dispose();
-        volumeTextureRef.current = null;
-      }
-    };
-  }, [assets, volume?.assetId, volume?.uri]); // Only reload when resource changes, not resolution
+  // Axis coordinates are normalised against the field bounds; a standalone
+  // VolumeRenderer has none and always uses a uniform grid.
+  const normBounds = axis_bounds ?? (min_bound && max_bound ? [min_bound, max_bound] : null);
+  const { textures, loading, error } = useFieldTextures(
+    assets,
+    {
+      volume: volume ?? null,
+      volumeIm: volume_im,
+      resolution: resolution as [number, number, number],
+      axisCoords: normBounds ? axis_coords : null,
+      minBound: normBounds?.[0] ?? [0, 0, 0],
+      maxBound: normBounds?.[1] ?? [1, 1, 1],
+    },
+    true,
+  );
+  // Actual texture resolution (from loaded data, not UI), for gradients.
+  const textureResolution = textures?.resolution ?? [128, 128, 128];
 
   // Create/update colormap texture when colormap changes
   useEffect(() => {
@@ -214,7 +172,7 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
 
   // Create shader material (only recreate when textures change)
   const volumeMaterial = useMemo(() => {
-    if (!volumeTexture || !colormapTextureRef.current) return null;
+    if (!textures || !colormapTextureRef.current) return null;
 
     // Create identity matrix for modelMatrixInverse (will be updated in mesh)
     const modelMatrixInverse = new THREE.Matrix4();
@@ -227,7 +185,7 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
 
     return new THREE.ShaderMaterial({
       uniforms: {
-        volumeTexture: { value: volumeTexture },
+        ...createFieldUniforms(),
         colormapTexture: { value: colormapTextureRef.current },
         blueNoiseTexture: { value: blueNoiseTexture },
         modelMatrixInverse: { value: modelMatrixInverse },
@@ -258,7 +216,7 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
       depthWrite: false,
       blending: THREE.NormalBlending
     });
-  }, [volumeTexture]); // Only recreate when texture changes!
+  }, [textures]); // Only recreate when textures change!
 
   // Cleanup ShaderMaterial on unmount or when material changes
   useEffect(() => {
@@ -305,6 +263,8 @@ const VolumeVisualizer: ReactTypes.FC<VolumeVisualizerProps> = ({
     volumeMaterial.uniforms.viewportSize.value.copy(drawingBufferSize);
     volumeMaterial.uniforms.cameraNear.value = camera.near;
     volumeMaterial.uniforms.cameraFar.value = camera.far;
+    // A ray-marched volume needs a non-negative density: complex fields show |E|.
+    if (textures) bindFieldUniforms(volumeMaterial.uniforms, textures, 'magnitude');
 
     const depthTexture = getVolumeDepthTexture();
     if (depthTexture) {

@@ -1,9 +1,11 @@
 /**
- * Plane Slice Shaders for rendering 2D slices from 3D volume textures
+ * Plane Slice Shaders for rendering 2D slices from 3D field textures
  *
- * Used by FieldVisualizer in Plane render mode to dynamically extract
- * slices from volume data without requiring backend to send 2D heatmaps.
+ * Used by FieldVisualizer in Slices render mode to dynamically extract
+ * slices from field data without requiring backend to send 2D heatmaps.
+ * Sampling (grid lookup, complex phase) comes from FIELD_SAMPLING_GLSL.
  */
+import { FIELD_SAMPLING_GLSL } from '../field/sampling';
 
 /**
  * Vertex shader for plane slice rendering
@@ -20,14 +22,15 @@ void main() {
 
 /**
  * Fragment shader for plane slice rendering
- * Samples a 2D slice from a 3D volume texture
+ * Samples a 2D slice from a 3D field
  */
 export const planeSliceFragmentShader = `
 precision highp float;
 precision highp sampler3D;
 precision highp sampler2D;
 
-uniform sampler3D volumeTexture;
+${FIELD_SAMPLING_GLSL}
+
 uniform sampler2D colormapTexture;
 uniform int slicePlane;      // 0=XY, 1=XZ, 2=YZ
 uniform float slicePosition; // 0-1 normalized position along perpendicular axis
@@ -35,50 +38,36 @@ uniform float opacity;
 uniform float valueMin;
 uniform float valueMax;
 uniform bool logColormap;    // Apply logarithmic scaling to colormap
+uniform bool discardBelowMin; // false for signed quantities, whose negative half is data
 
 varying vec2 vUv;
 
 void main() {
-  // Build 3D texture coordinate based on slice plane
+  // Build the normalized field position based on slice plane
   // Note: PlaneGeometry rotation affects UV->world mapping
   // XZ plane rotates -90 deg around X: UV.y direction becomes -Z
   // YZ plane rotates 90 deg around Y: UV.x direction becomes -Z
-  vec3 texCoord;
+  vec3 p;
 
   if (slicePlane == 0) {
     // XY plane - slice along Z axis
-    // UV.x -> X, UV.y -> Y, slicePosition -> Z
-    texCoord = vec3(vUv.x, vUv.y, slicePosition);
+    p = vec3(vUv.x, vUv.y, slicePosition);
   } else if (slicePlane == 1) {
-    // XZ plane - slice along Y axis
-    // UV.x -> X, UV.y -> -Z (flip Z), slicePosition -> Y
-    texCoord = vec3(vUv.x, slicePosition, 1.0 - vUv.y);
+    // XZ plane - slice along Y axis (flip Z)
+    p = vec3(vUv.x, slicePosition, 1.0 - vUv.y);
   } else {
-    // YZ plane - slice along X axis
-    // UV.x -> -Z (flip Z), UV.y -> Y, slicePosition -> X
-    texCoord = vec3(slicePosition, vUv.y, 1.0 - vUv.x);
+    // YZ plane - slice along X axis (flip Z)
+    p = vec3(slicePosition, vUv.y, 1.0 - vUv.x);
   }
 
-  // Sample volume
-  float value = texture(volumeTexture, texCoord).r;
+  float value = fieldValue(p);
 
   // Values below min are transparent, values above max are clamped to max
-  if (value < valueMin) {
+  if (discardBelowMin && value < valueMin) {
     discard;
   }
-  float clampedValue = min(value, valueMax);
+  float normalized = fieldNormalize(value, valueMin, valueMax, logColormap);
 
-  // Normalize value to 0-1 based on threshold range
-  float normalized = (clampedValue - valueMin) / (valueMax - valueMin + 0.0001);
-
-  // Apply logarithmic scaling if enabled (compresses large dynamic range)
-  if (logColormap) {
-    // Log scaling: log10(1 + 9*x) / log10(10) = log10(1 + 9*x)
-    // This maps 0->0, 1->1 with logarithmic distribution
-    normalized = log(1.0 + 9.0 * normalized) / log(10.0);
-  }
-
-  // Sample colormap
   vec3 color = texture2D(colormapTexture, vec2(normalized, 0.5)).rgb;
 
   gl_FragColor = vec4(color, opacity);

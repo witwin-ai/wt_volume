@@ -3,7 +3,7 @@ import type * as ThreeTypes from 'three';
 import { React, THREE, Line, useEffect, useMemo, useRef, useState, useFrame, useThree } from '../runtime';
 import { VisualizerConfig, VisualizerProps } from './types';
 import { getComponentValue, inheritsFrom } from './utils';
-import { loadVolumeTexture, checkVolumeSupport } from '../assets/volumeTexture';
+import { bindFieldUniforms, createFieldUniforms, useFieldTextures, type FieldQuantity } from '../field/fieldTextures';
 import { createColormapTexture } from '../shaders/volumeShaders';
 import { planeSliceVertexShader, planeSliceFragmentShader } from '../shaders/planeSliceShaders';
 import { calculateFieldEdgeHitRadius } from './fieldHitTarget';
@@ -33,6 +33,13 @@ interface FieldComponentData {
   plane_opacity?: number;
   // Volume data for shader-based rendering (unified for 2D and 3D)
   volume?: RenderResourceRef | null;
+  // Imaginary part of a complex field, same grid as `volume`.
+  volume_im?: RenderResourceRef | null;
+  // Per-axis grid coordinates (m) of a non-uniform grid; null for uniform.
+  axis_coords?: number[][] | null;
+  // 'value' (Re at field_phase for complex fields) or 'magnitude'.
+  field_quantity?: string;
+  field_phase?: number;  // radians
   resolution?: number[];
   // Normalized display range (0-1)
   display_range?: number[];  // [min, max] normalized (0-1)
@@ -150,20 +157,39 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     plane_position = 0.5,
     plane_opacity = 1.0,
     volume,
+    volume_im = null,
+    axis_coords = null,
+    field_quantity = 'value',
+    field_phase = 0,
     resolution = [128, 128, 128],
     display_range = [0.0, 1.0]
   } = fieldData;
 
-  // Volume data is already normalized to 0-1 in backend (set_volume_data)
-  // So display_range (0-1) maps directly to valueMin/valueMax shader uniforms
-  const valueMin = display_range[0];
+  // Volume data is already normalized in backend (set_volume_data): a real
+  // field to 0-1, a complex field by its peak |E| so re/im lie in -1..1.
+  // display_range (0-1) therefore maps directly to the shader's value range.
+  const complexField = !!volume_im;
+  // Re(E e^{-i phase}) is signed: show -max..max on a diverging colormap
+  // and keep the negative half instead of discarding it.
+  const signed = complexField && field_quantity !== 'magnitude';
+  const valueMin = signed ? -display_range[1] : display_range[0];
   const valueMax = display_range[1];
 
-  // 3D volume texture state (unified for 2D and 3D modes)
-  const [volumeTexture, setVolumeTexture] = useState<ThreeTypes.Data3DTexture | null>(null);
-  const volumeTextureRef = useRef<ThreeTypes.Data3DTexture | null>(null);
   const colormapTextureRef = useRef<ThreeTypes.DataTexture | null>(null);
   const sliceMeshRef = useRef<ThreeTypes.Mesh | null>(null);
+
+  const { textures } = useFieldTextures(
+    assets,
+    {
+      volume: volume ?? null,
+      volumeIm: volume_im ?? null,
+      resolution: resolution as [number, number, number],
+      axisCoords: axis_coords ?? null,
+      minBound: min_bound,
+      maxBound: max_bound,
+    },
+    render_mode === 'Slices',
+  );
 
   // Refs for shader uniforms (to ensure useFrame gets latest values)
   const planeParamsRef = useRef({
@@ -172,54 +198,11 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     opacity: plane_opacity,
     valueMin: valueMin,
     valueMax: valueMax,
-    logColormap: log_colormap
+    logColormap: log_colormap,
+    signed,
+    quantity: field_quantity as FieldQuantity,
+    phase: field_phase,
   });
-
-  // Load 3D volume texture when the resource ref changes (unified for both 2D and 3D)
-  useEffect(() => {
-    // Only load if we have a volume resource and are in Slices mode
-    if (!volume || render_mode !== 'Slices') {
-      return;
-    }
-
-    const loadVolume = async () => {
-      try {
-        const loadResolution = resolution as [number, number, number];
-
-        // Check WebGL2 support
-        const support = checkVolumeSupport(loadResolution);
-        if (!support.supported) {
-          console.error('[FieldVisualizer] Volume not supported:', support.message);
-          return;
-        }
-
-        // Cleanup old texture
-        if (volumeTextureRef.current) {
-          volumeTextureRef.current.dispose();
-          volumeTextureRef.current = null;
-        }
-
-        // Load volume
-        const result = await loadVolumeTexture(assets, volume, loadResolution);
-
-        volumeTextureRef.current = result.texture;
-        setVolumeTexture(result.texture);
-
-      } catch (err: any) {
-        console.error('[FieldVisualizer] Failed to load volume:', err);
-      }
-    };
-
-    loadVolume();
-
-    // Cleanup on unmount
-    return () => {
-      if (volumeTextureRef.current) {
-        volumeTextureRef.current.dispose();
-        volumeTextureRef.current = null;
-      }
-    };
-  }, [assets, volume?.assetId, volume?.uri, render_mode]);
 
   // Create/update colormap texture for shader-based plane slicing
   useEffect(() => {
@@ -263,24 +246,30 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     opacity: plane_opacity,
     valueMin: valueMin,
     valueMax: valueMax,
-    logColormap: log_colormap
+    logColormap: log_colormap,
+    signed,
+    quantity: field_quantity as FieldQuantity,
+    phase: field_phase,
   };
 
   // Create plane slice shader material
   const planeSliceMaterial = useMemo(() => {
-    if (!volumeTexture || !colormapTextureRef.current) return null;
+    if (!textures || !colormapTextureRef.current) return null;
 
+    const uniforms = {
+      ...createFieldUniforms(),
+      colormapTexture: { value: colormapTextureRef.current },
+      slicePlane: { value: slicePlaneInt },
+      slicePosition: { value: effectiveSlicePosition },
+      opacity: { value: plane_opacity },
+      valueMin: { value: valueMin },
+      valueMax: { value: valueMax },
+      logColormap: { value: log_colormap },
+      discardBelowMin: { value: !signed },
+    };
+    bindFieldUniforms(uniforms, textures, field_quantity as FieldQuantity, field_phase);
     return new THREE.ShaderMaterial({
-      uniforms: {
-        volumeTexture: { value: volumeTexture },
-        colormapTexture: { value: colormapTextureRef.current },
-        slicePlane: { value: slicePlaneInt },
-        slicePosition: { value: effectiveSlicePosition },
-        opacity: { value: plane_opacity },
-        valueMin: { value: valueMin },
-        valueMax: { value: valueMax },
-        logColormap: { value: log_colormap }
-      },
+      uniforms,
       vertexShader: planeSliceVertexShader,
       fragmentShader: planeSliceFragmentShader,
       side: THREE.DoubleSide,
@@ -288,25 +277,32 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
       depthWrite: true,
       alphaTest: 0.01
     });
-  }, [volumeTexture]);
+    // Uniform values are refreshed every frame below; only new textures need a new material.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [textures]);
+
+  useEffect(() => () => planeSliceMaterial?.dispose(), [planeSliceMaterial]);
 
   // Update plane slice shader uniforms every frame
   useFrame(() => {
-    if (!sliceMeshRef.current || !planeSliceMaterial) return;
+    if (!sliceMeshRef.current || !planeSliceMaterial || !textures) return;
 
     // Get latest params from ref (avoids stale closure issues)
     const params = planeParamsRef.current;
 
     // Update uniforms
-    planeSliceMaterial.uniforms.slicePlane.value = params.slicePlaneInt;
-    planeSliceMaterial.uniforms.slicePosition.value = params.slicePosition;
-    planeSliceMaterial.uniforms.opacity.value = params.opacity;
-    planeSliceMaterial.uniforms.valueMin.value = params.valueMin;
-    planeSliceMaterial.uniforms.valueMax.value = params.valueMax;
-    planeSliceMaterial.uniforms.logColormap.value = params.logColormap;
+    const u = planeSliceMaterial.uniforms;
+    u.slicePlane.value = params.slicePlaneInt;
+    u.slicePosition.value = params.slicePosition;
+    u.opacity.value = params.opacity;
+    u.valueMin.value = params.valueMin;
+    u.valueMax.value = params.valueMax;
+    u.logColormap.value = params.logColormap;
+    u.discardBelowMin.value = !params.signed;
+    bindFieldUniforms(u, textures, params.quantity, params.phase);
 
     if (colormapTextureRef.current) {
-      planeSliceMaterial.uniforms.colormapTexture.value = colormapTextureRef.current;
+      u.colormapTexture.value = colormapTextureRef.current;
     }
   });
 
@@ -639,6 +635,10 @@ export const fieldVisualizerConfig: VisualizerConfig<FieldComponentData> = {
     plane_opacity: getComponentValue(comp, 'plane_opacity', 1.0),
     // Volume data for shader-based rendering (unified)
     volume: getComponentValue(comp, 'volume', null),
+    volume_im: getComponentValue(comp, 'volume_im', null),
+    axis_coords: getComponentValue(comp, 'axis_coords', null),
+    field_quantity: getComponentValue(comp, 'field_quantity', 'value'),
+    field_phase: getComponentValue(comp, 'field_phase', 0),
     resolution: getComponentValue(comp, 'resolution', [128, 128, 128]),
     // Normalized display range (0-1)
     display_range: getComponentValue(comp, 'display_range', [0.0, 1.0]),

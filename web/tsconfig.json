@@ -9,10 +9,10 @@
     "esModuleInterop": true,
     "baseUrl": ".",
     "paths": {
-      "react": ["../../../studio/node_modules/@types/react"],
-      "three": ["../../../studio/node_modules/@types/three"],
-      "@react-three/fiber": ["../../../studio/node_modules/@react-three/fiber/dist/declarations/src/index"],
-      "@react-three/drei": ["../../../studio/node_modules/@react-three/drei/index"]
+      "react": ["../../../witwin-studio/studio/node_modules/@types/react"],
+      "three": ["../../../witwin-studio/studio/node_modules/@types/three"],
+      "@react-three/fiber": ["../../../witwin-studio/studio/node_modules/@react-three/fiber/dist/declarations/src/index"],
+      "@react-three/drei": ["../../../witwin-studio/studio/node_modules/@react-three/drei/index"]
     }
   },
   "include": ["src"]
