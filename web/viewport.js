@@ -589,8 +589,50 @@ function bwrColormap(v) {
     return [1, 1 - t, 1 - t];
   }
 }
+function stopsColormap(hexStops) {
+  const stops = hexStops.map((hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+  });
+  return (v) => {
+    const x = Math.min(Math.max(v, 0), 1) * (stops.length - 1);
+    const i = Math.min(Math.floor(x), stops.length - 2);
+    const t = x - i;
+    const a = stops[i];
+    const b = stops[i + 1];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  };
+}
+var rdbuColormap = stopsColormap([
+  "#053061",
+  "#2166ac",
+  "#4393c3",
+  "#92c5de",
+  "#d1e5f0",
+  "#f7f7f7",
+  "#fddbc7",
+  "#f4a582",
+  "#d6604d",
+  "#b2182b",
+  "#67001f"
+]);
+var magmaColormap = stopsColormap([
+  "#000004",
+  "#1c1044",
+  "#4f127b",
+  "#812581",
+  "#b5367a",
+  "#e55064",
+  "#fb8761",
+  "#fec287",
+  "#fcfdbf"
+]);
 function getColormapFunc(name) {
   switch (name) {
+    case "rdbu":
+      return rdbuColormap;
+    case "magma":
+      return magmaColormap;
     case "inferno":
       return infernoColormap;
     case "plasma":
@@ -1729,51 +1771,75 @@ var sdfVisualizerConfig = {
 var SDFVisualizer_default = SDFVisualizer;
 
 // src/shaders/planeSliceShaders.ts
-var planeSliceVertexShader = `
-varying vec2 vUv;
+var SLICE_POINT_GLSL = (
+  /* glsl */
+  `
+uniform int slicePlane;      // 0=XY, 1=XZ, 2=YZ
+uniform float slicePosition; // 0-1 normalized position along perpendicular axis
 
-void main() {
-  vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+vec3 slicePoint(vec2 uv) {
+  if (slicePlane == 0) return vec3(uv.x, uv.y, slicePosition);
+  if (slicePlane == 1) return vec3(uv.x, slicePosition, 1.0 - uv.y);
+  return vec3(slicePosition, uv.y, 1.0 - uv.x);
 }
-`;
-var planeSliceFragmentShader = `
+`
+);
+var PRECISION = (
+  /* glsl */
+  `
 precision highp float;
 precision highp sampler3D;
 precision highp sampler2D;
-
+`
+);
+var planeSliceVertexShader = `
+${PRECISION}
 ${FIELD_SAMPLING_GLSL}
+${SLICE_POINT_GLSL}
+
+uniform float valueMin;
+uniform float valueMax;
+uniform bool discardBelowMin;
+uniform float heightAmount; // local units at the top of the range; 0 = flat
+
+varying vec2 vUv;
+varying vec3 vViewPosition;
+
+void main() {
+  vUv = uv;
+  vec3 pos = position;
+  if (heightAmount != 0.0) {
+    float v = fieldValue(slicePoint(uv));
+    // Signed values rise and sink about the plane; unsigned ones rise from
+    // the bottom of the display range.
+    float h = discardBelowMin
+      ? clamp((v - valueMin) / max(valueMax - valueMin, 1e-6), 0.0, 1.0)
+      : clamp(v / max(valueMax, 1e-6), -1.0, 1.0);
+    pos.z += h * heightAmount;
+  }
+  vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+  vViewPosition = mv.xyz;
+  gl_Position = projectionMatrix * mv;
+}
+`;
+var planeSliceFragmentShader = `
+${PRECISION}
+${FIELD_SAMPLING_GLSL}
+${SLICE_POINT_GLSL}
 
 uniform sampler2D colormapTexture;
-uniform int slicePlane;      // 0=XY, 1=XZ, 2=YZ
-uniform float slicePosition; // 0-1 normalized position along perpendicular axis
 uniform float opacity;
 uniform float valueMin;
 uniform float valueMax;
 uniform bool logColormap;    // Apply logarithmic scaling to colormap
 uniform bool discardBelowMin; // false for signed quantities, whose negative half is data
+uniform float heightAmount;
 
 varying vec2 vUv;
+varying vec3 vViewPosition;
 
 void main() {
-  // Build the normalized field position based on slice plane
-  // Note: PlaneGeometry rotation affects UV->world mapping
-  // XZ plane rotates -90 deg around X: UV.y direction becomes -Z
-  // YZ plane rotates 90 deg around Y: UV.x direction becomes -Z
-  vec3 p;
-
-  if (slicePlane == 0) {
-    // XY plane - slice along Z axis
-    p = vec3(vUv.x, vUv.y, slicePosition);
-  } else if (slicePlane == 1) {
-    // XZ plane - slice along Y axis (flip Z)
-    p = vec3(vUv.x, slicePosition, 1.0 - vUv.y);
-  } else {
-    // YZ plane - slice along X axis (flip Z)
-    p = vec3(slicePosition, vUv.y, 1.0 - vUv.x);
-  }
-
-  float value = fieldValue(p);
+  float value = fieldValue(slicePoint(vUv));
 
   // Values below min are transparent, values above max are clamped to max
   if (discardBelowMin && value < valueMin) {
@@ -1782,10 +1848,130 @@ void main() {
   float normalized = fieldNormalize(value, valueMin, valueMax, logColormap);
 
   vec3 color = texture2D(colormapTexture, vec2(normalized, 0.5)).rgb;
+  if (heightAmount != 0.0) {
+    vec3 n = normalize(cross(dFdx(vViewPosition), dFdy(vViewPosition)));
+    color *= 0.55 + 0.45 * abs(n.z);
+  }
 
   gl_FragColor = vec4(color, opacity);
 }
 `;
+
+// src/field/fieldLegend.ts
+var BAR_WIDTH = 168;
+var BAR_HEIGHT = 10;
+function legendTitle(name, unit, complex, magnitude, hasRange) {
+  const quantity = name || (complex ? magnitude ? "|E|" : "Re(E)" : "Value");
+  if (unit) return `${quantity} (${unit})`;
+  return hasRange ? quantity : `${quantity}, arbitrary units`;
+}
+function formatLegendValue(v) {
+  if (v === 0 || Math.abs(v) < 1e-12) return "0";
+  const a = Math.abs(v);
+  if (a >= 1e4 || a < 0.01) return v.toExponential(1).replace("e+", "e");
+  return String(Number(v.toPrecision(2)));
+}
+function dataValue(spec, n) {
+  const range = spec.valueRange;
+  if (!range || range.length !== 2) return n;
+  if (spec.complex) return n * Math.max(Math.abs(range[0]), Math.abs(range[1]));
+  return range[0] + n * (range[1] - range[0]);
+}
+function legendTicks(spec) {
+  const ticks = [
+    [0, formatLegendValue(dataValue(spec, spec.valueMin))],
+    [1, formatLegendValue(dataValue(spec, spec.valueMax))]
+  ];
+  if (spec.signed && !spec.logScale) ticks.splice(1, 0, [0.5, "0"]);
+  return ticks;
+}
+var stacks = /* @__PURE__ */ new WeakMap();
+function acquireStack(parent) {
+  let entry = stacks.get(parent);
+  if (!entry) {
+    const el = document.createElement("div");
+    el.dataset.testid = "field-legends";
+    Object.assign(el.style, {
+      position: "absolute",
+      left: "12px",
+      bottom: "44px",
+      display: "flex",
+      flexDirection: "column",
+      gap: "8px",
+      pointerEvents: "none",
+      zIndex: "2"
+    });
+    parent.appendChild(el);
+    entry = { el, users: 0 };
+    stacks.set(parent, entry);
+  }
+  entry.users += 1;
+  return entry.el;
+}
+function releaseStack(parent) {
+  const entry = stacks.get(parent);
+  if (!entry) return;
+  entry.users -= 1;
+  if (entry.users <= 0) {
+    entry.el.remove();
+    stacks.delete(parent);
+  }
+}
+function renderCard(card, spec) {
+  card.replaceChildren();
+  const title = document.createElement("div");
+  title.textContent = spec.title;
+  Object.assign(title.style, { fontWeight: "500", marginBottom: "6px", color: "var(--text-primary)" });
+  const bar = document.createElement("canvas");
+  bar.width = BAR_WIDTH;
+  bar.height = 1;
+  Object.assign(bar.style, { display: "block", width: `${BAR_WIDTH}px`, height: `${BAR_HEIGHT}px`, borderRadius: "2px" });
+  const ctx = bar.getContext("2d");
+  if (ctx) {
+    const colour = getColormapFunc(spec.colormap);
+    const img = ctx.createImageData(BAR_WIDTH, 1);
+    for (let x = 0; x < BAR_WIDTH; x++) {
+      let t = x / (BAR_WIDTH - 1);
+      if (spec.logScale) t = Math.log10(1 + 9 * t);
+      const [r, g, b] = colour(t);
+      img.data.set([r * 255, g * 255, b * 255, 255], x * 4);
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  const ticks = document.createElement("div");
+  Object.assign(ticks.style, { position: "relative", height: "14px", marginTop: "4px", color: "var(--text-secondary)" });
+  for (const [at, text] of legendTicks(spec)) {
+    const label = document.createElement("span");
+    label.textContent = text;
+    const anchor = at === 0 ? "0%" : at === 1 ? "-100%" : "-50%";
+    Object.assign(label.style, { position: "absolute", left: `${at * 100}%`, transform: `translateX(${anchor})` });
+    ticks.appendChild(label);
+  }
+  card.append(title, bar, ticks);
+}
+function useFieldLegend(spec) {
+  const gl = useThree((s) => s.gl);
+  const key = spec ? JSON.stringify(spec) : "";
+  useEffect(() => {
+    const parent = gl.domElement.parentElement;
+    if (!spec || !parent) return void 0;
+    const stack = acquireStack(parent);
+    const card = document.createElement("div");
+    Object.assign(card.style, {
+      background: "var(--gray-3)",
+      border: "1px solid var(--border-subtle)",
+      borderRadius: "6px",
+      padding: "8px 10px",
+      font: "11px var(--font-family)"
+    });
+    renderCard(card, spec);
+    stack.appendChild(card);
+    return () => {
+      card.remove();
+      releaseStack(parent);
+    };
+  }, [gl, key]);
+}
 
 // src/gizmos/fieldHitTarget.ts
 var FIELD_EDGE_HIT_WIDTH_PX = 8;
@@ -1839,6 +2025,7 @@ var SOFT_SELECTION_HIT_AREA_FLAG = "__softSelectionHitArea";
 // src/gizmos/FieldVisualizer.tsx
 var DEFAULT_FIELD_COLOR = "#333333";
 var DEFAULT_FIELD_OPACITY = 0.7;
+var MAX_HEIGHT_SEGMENTS = 256;
 function createCheckerboardTexture(width, height) {
   const data = new Uint8Array(width * height * 4);
   for (let y = 0; y < height; y++) {
@@ -1930,12 +2117,30 @@ var FieldVisualizer = ({
     field_quantity = "value",
     field_phase = 0,
     resolution = [128, 128, 128],
-    display_range = [0, 1]
+    display_range = [0, 1],
+    value_range = null,
+    show_legend = true,
+    legend_title = "",
+    field_unit = "",
+    slice_style = "Flat",
+    height_scale = 0.2
   } = fieldData2;
   const complexField = !!volume_im;
   const signed = complexField && field_quantity !== "magnitude";
   const valueMin = signed ? -display_range[1] : display_range[0];
   const valueMax = display_range[1];
+  useFieldLegend(
+    render_mode === "Slices" && show_legend && volume ? {
+      title: legendTitle(legend_title, field_unit, complexField, field_quantity === "magnitude", !!value_range),
+      colormap,
+      valueMin,
+      valueMax,
+      signed,
+      logScale: log_colormap,
+      complex: complexField,
+      valueRange: value_range
+    } : null
+  );
   const colormapTextureRef = useRef(null);
   const sliceMeshRef = useRef(null);
   const { textures } = useFieldTextures(
@@ -1959,7 +2164,8 @@ var FieldVisualizer = ({
     logColormap: log_colormap,
     signed,
     quantity: field_quantity,
-    phase: field_phase
+    phase: field_phase,
+    heightAmount: 0
   });
   useEffect(() => {
     if (colormapTextureRef.current) {
@@ -1987,6 +2193,7 @@ var FieldVisualizer = ({
         return 1;
     }
   }, [effectivePlaneAxis]);
+  const height = slice_style === "Height";
   planeParamsRef.current = {
     slicePlaneInt,
     slicePosition: effectiveSlicePosition,
@@ -1996,7 +2203,9 @@ var FieldVisualizer = ({
     logColormap: log_colormap,
     signed,
     quantity: field_quantity,
-    phase: field_phase
+    phase: field_phase,
+    heightAmount: 0
+    // set below, once the plane size is known
   };
   const planeSliceMaterial = useMemo(() => {
     if (!textures || !colormapTextureRef.current) return null;
@@ -2009,7 +2218,8 @@ var FieldVisualizer = ({
       valueMin: { value: valueMin },
       valueMax: { value: valueMax },
       logColormap: { value: log_colormap },
-      discardBelowMin: { value: !signed }
+      discardBelowMin: { value: !signed },
+      heightAmount: { value: 0 }
     };
     bindFieldUniforms(uniforms, textures, field_quantity, field_phase);
     return new THREE.ShaderMaterial({
@@ -2034,6 +2244,7 @@ var FieldVisualizer = ({
     u.valueMax.value = params.valueMax;
     u.logColormap.value = params.logColormap;
     u.discardBelowMin.value = !params.signed;
+    u.heightAmount.value = params.heightAmount;
     bindFieldUniforms(u, textures, params.quantity, params.phase);
     if (colormapTextureRef.current) {
       u.colormapTexture.value = colormapTextureRef.current;
@@ -2122,43 +2333,43 @@ var FieldVisualizer = ({
       checkerboardTextureRef.current = null;
     }
     if (show_grid && resolution) {
-      let width, height;
+      let width, height2;
       if (dimension === "2D") {
         switch (plane) {
           case "XY":
             width = resolution[0];
-            height = resolution[1];
+            height2 = resolution[1];
             break;
           case "YZ":
             width = resolution[1];
-            height = resolution[2];
+            height2 = resolution[2];
             break;
           case "XZ":
           default:
             width = resolution[0];
-            height = resolution[2];
+            height2 = resolution[2];
             break;
         }
       } else {
         switch (plane_axis) {
           case "XY":
             width = resolution[0];
-            height = resolution[1];
+            height2 = resolution[1];
             break;
           case "YZ":
             width = resolution[1];
-            height = resolution[2];
+            height2 = resolution[2];
             break;
           case "XZ":
           default:
             width = resolution[0];
-            height = resolution[2];
+            height2 = resolution[2];
             break;
         }
       }
       width = Math.max(2, Math.round(width));
-      height = Math.max(2, Math.round(height));
-      const texture = createCheckerboardTexture(width, height);
+      height2 = Math.max(2, Math.round(height2));
+      const texture = createCheckerboardTexture(width, height2);
       checkerboardTextureRef.current = texture;
       setCheckerboardTexture(texture);
     } else {
@@ -2229,6 +2440,19 @@ var FieldVisualizer = ({
       }
     }
   }, [min_bound, max_bound, dimension, plane, plane_axis, plane_position]);
+  planeParamsRef.current.heightAmount = height ? height_scale * Math.max(planeGeometry.size[0], planeGeometry.size[1]) : 0;
+  const sliceSegments = useMemo(() => {
+    if (!height) return [1, 1];
+    const cells = (axis) => Math.min(MAX_HEIGHT_SEGMENTS, Math.max(1, Math.round(resolution[axis] ?? 64)));
+    switch (effectivePlaneAxis) {
+      case "XY":
+        return [cells(0), cells(1)];
+      case "YZ":
+        return [cells(2), cells(1)];
+      default:
+        return [cells(0), cells(2)];
+    }
+  }, [height, resolution, effectivePlaneAxis]);
   return /* @__PURE__ */ React.createElement("group", null, boxEdges.map((edge, i) => /* @__PURE__ */ React.createElement(
     Line,
     {
@@ -2258,8 +2482,8 @@ var FieldVisualizer = ({
       renderOrder: -10,
       material: planeSliceMaterial
     },
-    /* @__PURE__ */ React.createElement("planeGeometry", { args: [planeGeometry.size[0], planeGeometry.size[1]] })
-  ), checkerboardTexture && show_grid && render_mode === "Slices" && /* @__PURE__ */ React.createElement(
+    /* @__PURE__ */ React.createElement("planeGeometry", { args: [planeGeometry.size[0], planeGeometry.size[1], sliceSegments[0], sliceSegments[1]] })
+  ), checkerboardTexture && show_grid && render_mode === "Slices" && !height && /* @__PURE__ */ React.createElement(
     "mesh",
     {
       position: [
@@ -2323,7 +2547,13 @@ var fieldVisualizerConfig = {
     field_phase: getComponentValue(comp, "field_phase", 0),
     resolution: getComponentValue(comp, "resolution", [128, 128, 128]),
     // Normalized display range (0-1)
-    display_range: getComponentValue(comp, "display_range", [0, 1])
+    display_range: getComponentValue(comp, "display_range", [0, 1]),
+    value_range: getComponentValue(comp, "value_range", null),
+    show_legend: getComponentValue(comp, "show_legend", true),
+    legend_title: getComponentValue(comp, "legend_title", ""),
+    field_unit: getComponentValue(comp, "field_unit", ""),
+    slice_style: getComponentValue(comp, "slice_style", "Flat"),
+    height_scale: getComponentValue(comp, "height_scale", 0.2)
   }),
   component: FieldVisualizerAdapter,
   skipStandardGeometry: true,

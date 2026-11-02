@@ -6,6 +6,7 @@ import { getComponentValue, inheritsFrom } from './utils';
 import { bindFieldUniforms, createFieldUniforms, useFieldTextures, type FieldQuantity } from '../field/fieldTextures';
 import { createColormapTexture } from '../shaders/volumeShaders';
 import { planeSliceVertexShader, planeSliceFragmentShader } from '../shaders/planeSliceShaders';
+import { legendTitle, useFieldLegend } from '../field/fieldLegend';
 import { calculateFieldEdgeHitRadius } from './fieldHitTarget';
 import { SOFT_SELECTION_HIT_AREA_FLAG } from './selectionHitTarget';
 import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
@@ -43,7 +44,19 @@ interface FieldComponentData {
   resolution?: number[];
   // Normalized display range (0-1)
   display_range?: number[];  // [min, max] normalized (0-1)
+  // Data values the normalized grid maps back to (colour-bar labels).
+  value_range?: number[] | null;
+  show_legend?: boolean;
+  legend_title?: string;
+  field_unit?: string;
+  // 'Flat' or 'Height' (slice lifted by its value).
+  slice_style?: string;
+  height_scale?: number;  // peak height / larger slice side
 }
+
+// Height surfaces need vertices to bend; more than this per side adds
+// vertex cost without visible detail at viewport sizes.
+const MAX_HEIGHT_SEGMENTS = 256;
 
 interface FieldVisualizerProps {
   fieldData: FieldComponentData;
@@ -162,7 +175,13 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     field_quantity = 'value',
     field_phase = 0,
     resolution = [128, 128, 128],
-    display_range = [0.0, 1.0]
+    display_range = [0.0, 1.0],
+    value_range = null,
+    show_legend = true,
+    legend_title = '',
+    field_unit = '',
+    slice_style = 'Flat',
+    height_scale = 0.2,
   } = fieldData;
 
   // Volume data is already normalized in backend (set_volume_data): a real
@@ -174,6 +193,21 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
   const signed = complexField && field_quantity !== 'magnitude';
   const valueMin = signed ? -display_range[1] : display_range[0];
   const valueMax = display_range[1];
+
+  useFieldLegend(
+    render_mode === 'Slices' && show_legend && volume
+      ? {
+          title: legendTitle(legend_title, field_unit, complexField, field_quantity === 'magnitude', !!value_range),
+          colormap,
+          valueMin,
+          valueMax,
+          signed,
+          logScale: log_colormap,
+          complex: complexField,
+          valueRange: value_range,
+        }
+      : null,
+  );
 
   const colormapTextureRef = useRef<ThreeTypes.DataTexture | null>(null);
   const sliceMeshRef = useRef<ThreeTypes.Mesh | null>(null);
@@ -202,6 +236,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     signed,
     quantity: field_quantity as FieldQuantity,
     phase: field_phase,
+    heightAmount: 0,
   });
 
   // Create/update colormap texture for shader-based plane slicing
@@ -239,6 +274,8 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     }
   }, [effectivePlaneAxis]);
 
+  const height = slice_style === 'Height';
+
   // Update ref with latest plane params (for useFrame to access)
   planeParamsRef.current = {
     slicePlaneInt,
@@ -250,6 +287,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     signed,
     quantity: field_quantity as FieldQuantity,
     phase: field_phase,
+    heightAmount: 0, // set below, once the plane size is known
   };
 
   // Create plane slice shader material
@@ -266,6 +304,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
       valueMax: { value: valueMax },
       logColormap: { value: log_colormap },
       discardBelowMin: { value: !signed },
+      heightAmount: { value: 0 },
     };
     bindFieldUniforms(uniforms, textures, field_quantity as FieldQuantity, field_phase);
     return new THREE.ShaderMaterial({
@@ -299,6 +338,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     u.valueMax.value = params.valueMax;
     u.logColormap.value = params.logColormap;
     u.discardBelowMin.value = !params.signed;
+    u.heightAmount.value = params.heightAmount;
     bindFieldUniforms(u, textures, params.quantity, params.phase);
 
     if (colormapTextureRef.current) {
@@ -522,6 +562,21 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     }
   }, [min_bound, max_bound, dimension, plane, plane_axis, plane_position]);
 
+  planeParamsRef.current.heightAmount = height
+    ? height_scale * Math.max(planeGeometry.size[0], planeGeometry.size[1])
+    : 0;
+  // A flat slice is two triangles; a height surface gets one vertex per grid
+  // cell along each side, up to MAX_HEIGHT_SEGMENTS.
+  const sliceSegments = useMemo(() => {
+    if (!height) return [1, 1];
+    const cells = (axis: number) => Math.min(MAX_HEIGHT_SEGMENTS, Math.max(1, Math.round(resolution[axis] ?? 64)));
+    switch (effectivePlaneAxis) {
+      case 'XY': return [cells(0), cells(1)];
+      case 'YZ': return [cells(2), cells(1)];
+      default: return [cells(0), cells(2)];
+    }
+  }, [height, resolution, effectivePlaneAxis]);
+
   return (
     <group>
       {/* Box edges - visible */}
@@ -557,12 +612,12 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
           renderOrder={-10}
           material={planeSliceMaterial}
         >
-          <planeGeometry args={[planeGeometry.size[0], planeGeometry.size[1]]} />
+          <planeGeometry args={[planeGeometry.size[0], planeGeometry.size[1], sliceSegments[0], sliceSegments[1]]} />
         </mesh>
       )}
 
       {/* Checkerboard grid overlay - rendered on top of plane slice with slight offset */}
-      {checkerboardTexture && show_grid && render_mode === 'Slices' && (
+      {checkerboardTexture && show_grid && render_mode === 'Slices' && !height && (
         <mesh
           position={[
             planeGeometry.position[0],
@@ -642,6 +697,12 @@ export const fieldVisualizerConfig: VisualizerConfig<FieldComponentData> = {
     resolution: getComponentValue(comp, 'resolution', [128, 128, 128]),
     // Normalized display range (0-1)
     display_range: getComponentValue(comp, 'display_range', [0.0, 1.0]),
+    value_range: getComponentValue(comp, 'value_range', null),
+    show_legend: getComponentValue(comp, 'show_legend', true),
+    legend_title: getComponentValue(comp, 'legend_title', ''),
+    field_unit: getComponentValue(comp, 'field_unit', ''),
+    slice_style: getComponentValue(comp, 'slice_style', 'Flat'),
+    height_scale: getComponentValue(comp, 'height_scale', 0.2),
   }),
 
   component: FieldVisualizerAdapter,

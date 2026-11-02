@@ -397,8 +397,38 @@ export function bwrColormap(v: number): [number, number, number] {
 }
 
 // Get colormap function by name
+// Evenly spaced colour stops, linearly interpolated.
+function stopsColormap(hexStops: string[]): ColormapFunc {
+  const stops = hexStops.map((hex) => {
+    const n = parseInt(hex.slice(1), 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255] as [number, number, number];
+  });
+  return (v) => {
+    const x = Math.min(Math.max(v, 0), 1) * (stops.length - 1);
+    const i = Math.min(Math.floor(x), stops.length - 2);
+    const t = x - i;
+    const a = stops[i];
+    const b = stops[i + 1];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  };
+}
+
+// ColorBrewer RdBu reversed, so negative is blue, with a neutral midpoint:
+// the usual map for signed fields such as Re(E).
+export const rdbuColormap = stopsColormap([
+  '#053061', '#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7',
+  '#fddbc7', '#f4a582', '#d6604d', '#b2182b', '#67001f',
+]);
+
+// matplotlib magma: perceptually uniform, for magnitudes and intensities.
+export const magmaColormap = stopsColormap([
+  '#000004', '#1c1044', '#4f127b', '#812581', '#b5367a', '#e55064', '#fb8761', '#fec287', '#fcfdbf',
+]);
+
 export function getColormapFunc(name: string): ColormapFunc {
   switch (name) {
+    case 'rdbu': return rdbuColormap;
+    case 'magma': return magmaColormap;
     case 'inferno': return infernoColormap;
     case 'plasma': return plasmaColormap;
     case 'viridis': return viridisColormap;
