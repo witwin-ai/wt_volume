@@ -8,6 +8,8 @@ import FieldGizmo from './gizmos/FieldGizmo';
 import VectorFieldVisualizer, { vectorFieldVisualizerConfig } from './gizmos/VectorFieldVisualizer';
 import VolumeDepthPrepass from './gizmos/VolumeDepthPrepass';
 import { getComponentValue } from './gizmos/utils';
+import { createFieldSlicePanel } from './slice/FieldSlicePanel';
+import { ViewportHandlePass } from './slice/viewportHandle';
 
 function findComponent(object: HostSceneObject, predicate: (component: any) => boolean): any | null {
   const components = Array.isArray(object.components) ? object.components : [];
@@ -126,6 +128,15 @@ export function activateRenderingViewport(host: ViewportHost): void {
     id: 'witwin.volume.depth',
     priority: -100,
     component: VolumeDepthPrepass,
+  });
+  // Gives the slice panel the viewport scene (outlines) and canvas (recording).
+  host.registerPass({ id: 'witwin.volume.viewportHandle', component: ViewportHandlePass });
+  host.registerPanel({
+    id: 'witwin.volume.fieldSlice',
+    title: 'Field Slice',
+    icon: 'scan-line',
+    component: createFieldSlicePanel(host),
+    track: 'peer',
   });
   host.registerVisualizer({
     id: 'witwin.volume.field',

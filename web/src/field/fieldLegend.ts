@@ -43,18 +43,56 @@ export function formatLegendValue(v: number): string {
   return String(Number(v.toPrecision(2)));
 }
 
-function dataValue(spec: FieldLegendSpec, n: number): number {
+/** Data value for normalised display value `n`: real units when the publisher sent value_range. */
+export function legendDataValue(spec: FieldLegendSpec, n: number): number {
   const range = spec.valueRange;
   if (!range || range.length !== 2) return n;
   if (spec.complex) return n * Math.max(Math.abs(range[0]), Math.abs(range[1]));
   return range[0] + n * (range[1] - range[0]);
 }
 
+/** The Field component fields that decide how its values are displayed. */
+export interface FieldDisplaySource {
+  volume_im?: unknown;
+  field_quantity?: string;
+  display_range?: number[];
+  colormap?: string;
+  log_colormap?: boolean;
+  value_range?: number[] | null;
+  legend_title?: string;
+  field_unit?: string;
+}
+
+/**
+ * Display mapping of a Field: shared by the viewport slice and the 2D slice
+ * panel so both colour the same value the same way.
+ *
+ * Volume data arrives normalised (a real field to 0..1, a complex field by
+ * its peak |E| so re and im lie in -1..1), so display_range (0..1) is the
+ * value range directly. Re(E e^{-i phase}) is signed: it shows -max..max.
+ */
+export function fieldLegendSpec(data: FieldDisplaySource): FieldLegendSpec {
+  const complex = !!data.volume_im;
+  const magnitude = data.field_quantity === 'magnitude';
+  const signed = complex && !magnitude;
+  const range = data.display_range ?? [0, 1];
+  return {
+    title: legendTitle(data.legend_title ?? '', data.field_unit ?? '', complex, magnitude, !!data.value_range),
+    colormap: data.colormap ?? 'inferno',
+    valueMin: signed ? -range[1] : range[0],
+    valueMax: range[1],
+    signed,
+    logScale: !!data.log_colormap,
+    complex,
+    valueRange: data.value_range ?? null,
+  };
+}
+
 /** Ticks as [position along the bar 0..1, label]. */
 export function legendTicks(spec: FieldLegendSpec): Array<[number, string]> {
   const ticks: Array<[number, string]> = [
-    [0, formatLegendValue(dataValue(spec, spec.valueMin))],
-    [1, formatLegendValue(dataValue(spec, spec.valueMax))],
+    [0, formatLegendValue(legendDataValue(spec, spec.valueMin))],
+    [1, formatLegendValue(legendDataValue(spec, spec.valueMax))],
   ];
   if (spec.signed && !spec.logScale) ticks.splice(1, 0, [0.5, '0']);
   return ticks;

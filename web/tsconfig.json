@@ -12,7 +12,8 @@
       "react": ["../../../witwin-studio/studio/node_modules/@types/react"],
       "three": ["../../../witwin-studio/studio/node_modules/@types/three"],
       "@react-three/fiber": ["../../../witwin-studio/studio/node_modules/@react-three/fiber/dist/declarations/src/index"],
-      "@react-three/drei": ["../../../witwin-studio/studio/node_modules/@react-three/drei/index"]
+      "@react-three/drei": ["../../../witwin-studio/studio/node_modules/@react-three/drei/index"],
+      "lucide-react": ["../../../witwin-studio/studio/node_modules/lucide-react/dist/lucide-react"]
     }
   },
   "include": ["src"]

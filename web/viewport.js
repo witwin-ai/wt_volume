@@ -1,3 +1,7 @@
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+
 // src/runtime.ts
 function shared() {
   const globals = globalThis.__witwin;
@@ -125,7 +129,7 @@ function disposeTextures(t) {
   t.axes?.forEach((a) => a.dispose());
 }
 function useFieldTextures(assets, source, enabled) {
-  const [state, setState] = useState({ textures: null, loading: false, error: null });
+  const [state2, setState] = useState({ textures: null, loading: false, error: null });
   const { volume, volumeIm, resolution, axisCoords, minBound, maxBound } = source;
   const axesKey = hasAxes(source) ? JSON.stringify(axisCoords) + JSON.stringify([minBound, maxBound]) : "";
   useEffect(() => {
@@ -161,7 +165,7 @@ function useFieldTextures(assets, source, enabled) {
       disposeTextures(loaded);
     };
   }, [assets, enabled, volume?.assetId, volume?.uri, volumeIm?.assetId, volumeIm?.uri, axesKey]);
-  return state;
+  return state2;
 }
 
 // src/field/sampling.ts
@@ -1871,16 +1875,32 @@ function formatLegendValue(v) {
   if (a >= 1e4 || a < 0.01) return v.toExponential(1).replace("e+", "e");
   return String(Number(v.toPrecision(2)));
 }
-function dataValue(spec, n) {
+function legendDataValue(spec, n) {
   const range = spec.valueRange;
   if (!range || range.length !== 2) return n;
   if (spec.complex) return n * Math.max(Math.abs(range[0]), Math.abs(range[1]));
   return range[0] + n * (range[1] - range[0]);
 }
+function fieldLegendSpec(data) {
+  const complex = !!data.volume_im;
+  const magnitude = data.field_quantity === "magnitude";
+  const signed = complex && !magnitude;
+  const range = data.display_range ?? [0, 1];
+  return {
+    title: legendTitle(data.legend_title ?? "", data.field_unit ?? "", complex, magnitude, !!data.value_range),
+    colormap: data.colormap ?? "inferno",
+    valueMin: signed ? -range[1] : range[0],
+    valueMax: range[1],
+    signed,
+    logScale: !!data.log_colormap,
+    complex,
+    valueRange: data.value_range ?? null
+  };
+}
 function legendTicks(spec) {
   const ticks = [
-    [0, formatLegendValue(dataValue(spec, spec.valueMin))],
-    [1, formatLegendValue(dataValue(spec, spec.valueMax))]
+    [0, formatLegendValue(legendDataValue(spec, spec.valueMin))],
+    [1, formatLegendValue(legendDataValue(spec, spec.valueMax))]
   ];
   if (spec.signed && !spec.logScale) ticks.splice(1, 0, [0.5, "0"]);
   return ticks;
@@ -1971,6 +1991,46 @@ function useFieldLegend(spec) {
       releaseStack(parent);
     };
   }, [gl, key]);
+}
+
+// src/slice/phaseClock.ts
+var PERIOD_MS = 2e3;
+var state = { playing: false, phase: 0 };
+var listeners = /* @__PURE__ */ new Set();
+var frame = 0;
+var last = 0;
+function emit(next) {
+  state = next;
+  listeners.forEach((l) => l());
+}
+function tick(now) {
+  if (!state.playing) return;
+  const dt = last ? now - last : 0;
+  last = now;
+  emit({ playing: true, phase: (state.phase + 2 * Math.PI * dt / PERIOD_MS) % (2 * Math.PI) });
+  frame = requestAnimationFrame(tick);
+}
+var phaseClock = {
+  get: () => state,
+  subscribe(listener) {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  },
+  play(from) {
+    if (state.playing) return;
+    last = 0;
+    emit({ playing: true, phase: from });
+    frame = requestAnimationFrame(tick);
+  },
+  /** Stops and returns the phase it stopped at. */
+  pause() {
+    cancelAnimationFrame(frame);
+    emit({ playing: false, phase: state.phase });
+    return state.phase;
+  }
+};
+function usePhaseClock() {
+  return React.useSyncExternalStore(phaseClock.subscribe, phaseClock.get);
 }
 
 // src/gizmos/fieldHitTarget.ts
@@ -2118,29 +2178,20 @@ var FieldVisualizer = ({
     field_phase = 0,
     resolution = [128, 128, 128],
     display_range = [0, 1],
-    value_range = null,
     show_legend = true,
-    legend_title = "",
-    field_unit = "",
     slice_style = "Flat",
     height_scale = 0.2
   } = fieldData2;
-  const complexField = !!volume_im;
-  const signed = complexField && field_quantity !== "magnitude";
-  const valueMin = signed ? -display_range[1] : display_range[0];
-  const valueMax = display_range[1];
-  useFieldLegend(
-    render_mode === "Slices" && show_legend && volume ? {
-      title: legendTitle(legend_title, field_unit, complexField, field_quantity === "magnitude", !!value_range),
-      colormap,
-      valueMin,
-      valueMax,
-      signed,
-      logScale: log_colormap,
-      complex: complexField,
-      valueRange: value_range
-    } : null
-  );
+  const legend = fieldLegendSpec(fieldData2);
+  const { signed, valueMin, valueMax } = legend;
+  useFieldLegend(render_mode === "Slices" && show_legend && volume ? legend : null);
+  const clock = usePhaseClock();
+  const animating = clock.playing && !!volume_im;
+  const phase = animating ? clock.phase : field_phase;
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    if (animating) invalidate();
+  }, [animating, phase, invalidate]);
   const colormapTextureRef = useRef(null);
   const sliceMeshRef = useRef(null);
   const { textures } = useFieldTextures(
@@ -2203,7 +2254,7 @@ var FieldVisualizer = ({
     logColormap: log_colormap,
     signed,
     quantity: field_quantity,
-    phase: field_phase,
+    phase,
     heightAmount: 0
     // set below, once the plane size is known
   };
@@ -3317,14 +3368,14 @@ var FieldGizmo = ({
     localMinRef.current = minCopy;
     localMaxRef.current = maxCopy;
   }, [interaction, min_bound, max_bound]);
-  const handleDrag = useCallback((handle, newPosition) => {
+  const handleDrag = useCallback((handle2, newPosition) => {
     const newMin = [...localMinRef.current];
     const newMax = [...localMaxRef.current];
     for (let i = 0; i < 3; i++) {
-      if (handle.affectsMin[i]) {
+      if (handle2.affectsMin[i]) {
         newMin[i] = Math.min(newPosition[i], newMax[i] - cell_size);
       }
-      if (handle.affectsMax[i]) {
+      if (handle2.affectsMax[i]) {
         newMax[i] = Math.max(newPosition[i], newMin[i] + cell_size);
       }
     }
@@ -3376,8 +3427,8 @@ var FieldGizmo = ({
     }
     interaction.setGizmoDragging(false);
   }, [objectId, componentName, getObject, interaction, sceneWrites]);
-  const createDragHandler = useCallback((handle) => {
-    return (newPos) => handleDrag(handle, newPos);
+  const createDragHandler = useCallback((handle2) => {
+    return (newPos) => handleDrag(handle2, newPos);
   }, [handleDrag]);
   const [localPlanePosition, setLocalPlanePosition] = useState(plane_position);
   React.useEffect(() => {
@@ -3466,23 +3517,23 @@ var FieldGizmo = ({
       opacity: 0.8,
       raycast: () => null
     }
-  )), !isLocked && handles.map((handle, i) => /* @__PURE__ */ React.createElement(
+  )), !isLocked && handles.map((handle2, i) => /* @__PURE__ */ React.createElement(
     FieldHandle_default,
     {
-      key: `handle-${handle.type}-${i}`,
-      position: handle.position,
-      type: handle.type,
-      axis: handle.axis,
+      key: `handle-${handle2.type}-${i}`,
+      position: handle2.position,
+      type: handle2.type,
+      axis: handle2.axis,
       onDragStart: handleDragStart,
-      onDrag: createDragHandler(handle),
+      onDrag: createDragHandler(handle2),
       onDragEnd: handleDragEnd,
       setGizmoDragging: interaction.setGizmoDragging,
-      color: handle.type === "corner" ? "#ff4444" : handle.type === "edge" ? "#ff6666" : "#ff8888",
+      color: handle2.type === "corner" ? "#ff4444" : handle2.type === "edge" ? "#ff6666" : "#ff8888",
       hoverColor: "#ffff00",
       activeColor: "#00ff00",
-      affectsMin: handle.affectsMin,
-      affectsMax: handle.affectsMax,
-      edgeDirection: handle.edgeDirection
+      affectsMin: handle2.affectsMin,
+      affectsMax: handle2.affectsMax,
+      edgeDirection: handle2.edgeDirection
     }
   )), dimension === "3D" && render_mode === "Slices" && /* @__PURE__ */ React.createElement(
     FieldHeightSlider_default,
@@ -3847,6 +3898,1192 @@ var vectorFieldVisualizerConfig = {
 };
 var VectorFieldVisualizer_default = VectorFieldVisualizer;
 
+// src/vendor/react-host.ts
+var React3 = globalThis.__witwin?.react;
+if (!React3) {
+  throw new Error("[wt_volume] React host singleton is unavailable on globalThis.__witwin");
+}
+var createElement = React3.createElement;
+var Fragment = React3.Fragment;
+var forwardRef = React3.forwardRef;
+var memo = React3.memo;
+var createContext = React3.createContext;
+var useContext = React3.useContext;
+var useCallback2 = React3.useCallback;
+var useEffect2 = React3.useEffect;
+var useMemo2 = React3.useMemo;
+var useRef2 = React3.useRef;
+var useState2 = React3.useState;
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
+var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+var toCamelCase = (string) => string.replace(
+  /^([A-Z])|[\s-_]+(\w)/g,
+  (match, p1, p2) => p2 ? p2.toUpperCase() : p1.toLowerCase()
+);
+var toPascalCase = (string) => {
+  const camelCase = toCamelCase(string);
+  return camelCase.charAt(0).toUpperCase() + camelCase.slice(1);
+};
+var mergeClasses = (...classes) => classes.filter((className, index, array) => {
+  return Boolean(className) && className.trim() !== "" && array.indexOf(className) === index;
+}).join(" ").trim();
+var hasA11yProp = (props) => {
+  for (const prop in props) {
+    if (prop.startsWith("aria-") || prop === "role" || prop === "title") {
+      return true;
+    }
+  }
+};
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
+var defaultAttributes = {
+  xmlns: "http://www.w3.org/2000/svg",
+  width: 24,
+  height: 24,
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round",
+  strokeLinejoin: "round"
+};
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/Icon.js
+var Icon = forwardRef(
+  ({
+    color = "currentColor",
+    size = 24,
+    strokeWidth = 2,
+    absoluteStrokeWidth,
+    className = "",
+    children,
+    iconNode,
+    ...rest
+  }, ref) => createElement(
+    "svg",
+    {
+      ref,
+      ...defaultAttributes,
+      width: size,
+      height: size,
+      stroke: color,
+      strokeWidth: absoluteStrokeWidth ? Number(strokeWidth) * 24 / Number(size) : strokeWidth,
+      className: mergeClasses("lucide", className),
+      ...!children && !hasA11yProp(rest) && { "aria-hidden": "true" },
+      ...rest
+    },
+    [
+      ...iconNode.map(([tag, attrs]) => createElement(tag, attrs)),
+      ...Array.isArray(children) ? children : [children]
+    ]
+  )
+);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
+var createLucideIcon = (iconName, iconNode) => {
+  const Component = forwardRef(
+    ({ className, ...props }, ref) => createElement(Icon, {
+      ref,
+      iconNode,
+      className: mergeClasses(
+        `lucide-${toKebabCase(toPascalCase(iconName))}`,
+        `lucide-${iconName}`,
+        className
+      ),
+      ...props
+    })
+  );
+  Component.displayName = toPascalCase(iconName);
+  return Component;
+};
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
+var __iconNode = [
+  [
+    "path",
+    { d: "M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z", key: "1tn4o7" }
+  ],
+  ["path", { d: "m6.2 5.3 3.1 3.9", key: "iuk76l" }],
+  ["path", { d: "m12.4 3.4 3.1 4", key: "6hsd6n" }],
+  ["path", { d: "M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z", key: "ltgou9" }]
+];
+var Clapperboard = createLucideIcon("clapperboard", __iconNode);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/film.js
+var __iconNode2 = [
+  ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2", key: "afitv7" }],
+  ["path", { d: "M7 3v18", key: "bbkbws" }],
+  ["path", { d: "M3 7.5h4", key: "zfgn84" }],
+  ["path", { d: "M3 12h18", key: "1i2n21" }],
+  ["path", { d: "M3 16.5h4", key: "1230mu" }],
+  ["path", { d: "M17 3v18", key: "in4fa5" }],
+  ["path", { d: "M17 7.5h4", key: "myr1c1" }],
+  ["path", { d: "M17 16.5h4", key: "go4c1d" }]
+];
+var Film = createLucideIcon("film", __iconNode2);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
+var __iconNode3 = [
+  [
+    "path",
+    {
+      d: "M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10l-3.1-3.1a2 2 0 0 0-2.814.014L6 21",
+      key: "9csbqa"
+    }
+  ],
+  ["path", { d: "m14 19 3 3v-5.5", key: "9ldu5r" }],
+  ["path", { d: "m17 22 3-3", key: "1nkfve" }],
+  ["circle", { cx: "9", cy: "9", r: "2", key: "af1f0g" }]
+];
+var ImageDown = createLucideIcon("image-down", __iconNode3);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/pause.js
+var __iconNode4 = [
+  ["rect", { x: "14", y: "3", width: "5", height: "18", rx: "1", key: "kaeet6" }],
+  ["rect", { x: "5", y: "3", width: "5", height: "18", rx: "1", key: "1wsw3u" }]
+];
+var Pause = createLucideIcon("pause", __iconNode4);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/play.js
+var __iconNode5 = [
+  [
+    "path",
+    {
+      d: "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
+      key: "10ikf1"
+    }
+  ]
+];
+var Play = createLucideIcon("play", __iconNode5);
+
+// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/video.js
+var __iconNode6 = [
+  [
+    "path",
+    {
+      d: "m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5",
+      key: "ftymec"
+    }
+  ],
+  ["rect", { x: "2", y: "6", width: "14", height: "12", rx: "2", key: "158x01" }]
+];
+var Video = createLucideIcon("video", __iconNode6);
+
+// src/media/gif.ts
+function encodeGif(frames, delayMs) {
+  const { width, height } = frames[0];
+  const palette = buildPalette(frames);
+  const out = new ByteWriter();
+  out.str("GIF89a");
+  out.u16(width);
+  out.u16(height);
+  out.byte(247);
+  out.byte(0);
+  out.byte(0);
+  for (let i = 0; i < 256; i++) {
+    const c = palette.colors[i] ?? 0;
+    out.byte(c >> 16 & 255);
+    out.byte(c >> 8 & 255);
+    out.byte(c & 255);
+  }
+  out.bytes([33, 255, 11]);
+  out.str("NETSCAPE2.0");
+  out.bytes([3, 1, 0, 0, 0]);
+  const delay = Math.max(2, Math.round(delayMs / 10));
+  for (const f of frames) {
+    out.bytes([33, 249, 4, 0]);
+    out.u16(delay);
+    out.bytes([0, 0]);
+    out.byte(44);
+    out.u16(0);
+    out.u16(0);
+    out.u16(width);
+    out.u16(height);
+    out.byte(0);
+    const indices = new Uint8Array(width * height);
+    const d = f.data;
+    for (let p = 0, o = 0; p < indices.length; p++, o += 4) indices[p] = palette.lookup(d[o], d[o + 1], d[o + 2]);
+    out.byte(8);
+    lzw(indices, out);
+  }
+  out.byte(59);
+  return out.result();
+}
+function buildPalette(frames) {
+  const hist = new Uint32Array(32768);
+  const key = (r, g, b) => r >> 3 << 10 | g >> 3 << 5 | b >> 3;
+  for (const f of frames) {
+    const d = f.data;
+    for (let o = 0; o < d.length; o += 4) hist[key(d[o], d[o + 1], d[o + 2])]++;
+  }
+  const bins = [...hist.keys()].filter((k) => hist[k] > 0).sort((a, b) => hist[b] - hist[a]).slice(0, 256);
+  const colors = bins.map((k) => {
+    const r = (k >> 10 & 31) << 3 | 4;
+    const g = (k >> 5 & 31) << 3 | 4;
+    const b = (k & 31) << 3 | 4;
+    return r << 16 | g << 8 | b;
+  });
+  const cache = new Int16Array(32768).fill(-1);
+  const lookup = (r, g, b) => {
+    const k = key(r, g, b);
+    if (cache[k] >= 0) return cache[k];
+    let best = 0;
+    let bestD = Infinity;
+    for (let i = 0; i < colors.length; i++) {
+      const c = colors[i];
+      const d = ((c >> 16 & 255) - r) ** 2 + ((c >> 8 & 255) - g) ** 2 + ((c & 255) - b) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+    cache[k] = best;
+    return best;
+  };
+  return { colors, lookup };
+}
+function lzw(indices, out) {
+  const CLEAR = 256;
+  const EOI = 257;
+  const block = [];
+  let bitBuf = 0;
+  let bitLen = 0;
+  const emit2 = (code, size2) => {
+    bitBuf |= code << bitLen;
+    bitLen += size2;
+    while (bitLen >= 8) {
+      block.push(bitBuf & 255);
+      bitBuf >>>= 8;
+      bitLen -= 8;
+      if (block.length === 255) {
+        out.byte(255);
+        out.bytes(block);
+        block.length = 0;
+      }
+    }
+  };
+  let dict = /* @__PURE__ */ new Map();
+  let next = 258;
+  let size = 9;
+  emit2(CLEAR, size);
+  let prefix = indices[0];
+  for (let i = 1; i < indices.length; i++) {
+    const k = indices[i];
+    const keyed = prefix << 8 | k;
+    const hit = dict.get(keyed);
+    if (hit !== void 0) {
+      prefix = hit;
+      continue;
+    }
+    emit2(prefix, size);
+    if (next < 4096) {
+      dict.set(keyed, next++);
+      if (next > 1 << size && size < 12) size++;
+    } else {
+      emit2(CLEAR, size);
+      dict = /* @__PURE__ */ new Map();
+      next = 258;
+      size = 9;
+    }
+    prefix = k;
+  }
+  emit2(prefix, size);
+  emit2(EOI, size);
+  if (bitLen > 0) block.push(bitBuf & 255);
+  if (block.length) {
+    out.byte(block.length);
+    out.bytes(block);
+  }
+  out.byte(0);
+}
+var ByteWriter = class {
+  constructor() {
+    __publicField(this, "buf", new Uint8Array(1 << 16));
+    __publicField(this, "n", 0);
+  }
+  grow(extra) {
+    if (this.n + extra <= this.buf.length) return;
+    const b = new Uint8Array(Math.max(this.buf.length * 2, this.n + extra));
+    b.set(this.buf.subarray(0, this.n));
+    this.buf = b;
+  }
+  byte(v) {
+    this.grow(1);
+    this.buf[this.n++] = v;
+  }
+  bytes(v) {
+    this.grow(v.length);
+    for (let i = 0; i < v.length; i++) this.buf[this.n++] = v[i];
+  }
+  u16(v) {
+    this.byte(v & 255);
+    this.byte(v >> 8 & 255);
+  }
+  str(s) {
+    for (let i = 0; i < s.length; i++) this.byte(s.charCodeAt(i));
+  }
+  result() {
+    return this.buf.slice(0, this.n);
+  }
+};
+
+// src/media/movie.ts
+function webmType() {
+  if (typeof MediaRecorder === "undefined") throw new Error("MediaRecorder is not available in this browser.");
+  return MediaRecorder.isTypeSupported("video/webm;codecs=vp9") ? "video/webm;codecs=vp9" : "video/webm";
+}
+async function encodeCanvasMovie(canvas, draw, opts) {
+  const fps = opts.fps ?? 30;
+  draw(0);
+  const recorder = new MediaRecorder(canvas.captureStream(fps), { mimeType: webmType(), videoBitsPerSecond: opts.bitsPerSecond ?? 6e6 });
+  const chunks = [];
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  const stopped = new Promise((resolve) => recorder.onstop = () => resolve());
+  recorder.start();
+  for (let f = 0; f < opts.frames; f++) {
+    draw(f);
+    await new Promise((r) => setTimeout(r, 1e3 / fps));
+  }
+  recorder.stop();
+  await stopped;
+  return new Blob(chunks, { type: "video/webm" });
+}
+async function recordCanvas(canvas, durationMs, fps = 30) {
+  const recorder = new MediaRecorder(canvas.captureStream(fps), { mimeType: webmType() });
+  const chunks = [];
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  const stopped = new Promise((resolve) => recorder.onstop = () => resolve());
+  recorder.start();
+  await new Promise((r) => setTimeout(r, durationMs));
+  recorder.stop();
+  await stopped;
+  return new Blob(chunks, { type: "video/webm" });
+}
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1e3);
+}
+
+// src/slice/fieldGrid.ts
+var NORMAL = { XY: 2, XZ: 1, YZ: 0 };
+function gridCoords(resolution, minBound, maxBound, axisCoords) {
+  return [0, 1, 2].map((a) => {
+    const given = axisCoords?.[a];
+    if (given && given.length === resolution[a]) return Float64Array.from(given);
+    const n = Math.max(1, resolution[a]);
+    return Float64Array.from({ length: n }, (_, i) => n === 1 ? (minBound[a] + maxBound[a]) / 2 : minBound[a] + (maxBound[a] - minBound[a]) * i / (n - 1));
+  });
+}
+function locate(axis, v) {
+  const n = axis.length;
+  if (n < 2 || v <= axis[0]) return [0, 0];
+  if (v >= axis[n - 1]) return [n - 2, 1];
+  let lo = 0;
+  let hi = n - 1;
+  while (hi - lo > 1) {
+    const mid = lo + hi >> 1;
+    if (axis[mid] <= v) lo = mid;
+    else hi = mid;
+  }
+  return [lo, (v - axis[lo]) / (axis[hi] - axis[lo])];
+}
+function sliceGrid(field, plane, t) {
+  const a = NORMAL[plane];
+  const [ua, va] = [0, 1, 2].filter((d) => d !== a);
+  const n = field.coords.map((c) => c.length);
+  const axis = field.coords[a];
+  const position = axis[0] + Math.min(1, Math.max(0, t)) * (axis[axis.length - 1] - axis[0]);
+  const [k0, w] = locate(axis, position);
+  const k1 = Math.min(k0 + 1, n[a] - 1);
+  const nu = n[ua];
+  const nv = n[va];
+  const stride = [1, n[0], n[0] * n[1]];
+  const re = new Float32Array(nu * nv);
+  const im = field.im ? new Float32Array(nu * nv) : null;
+  for (let j = 0; j < nv; j++) {
+    for (let i = 0; i < nu; i++) {
+      const base = i * stride[ua] + j * stride[va];
+      const i0 = base + k0 * stride[a];
+      const i1 = base + k1 * stride[a];
+      const o = i + nu * j;
+      re[o] = field.re[i0] * (1 - w) + field.re[i1] * w;
+      if (im && field.im) im[o] = field.im[i0] * (1 - w) + field.im[i1] * w;
+    }
+  }
+  return { uAxis: ua, vAxis: va, normal: a, position, u: field.coords[ua], v: field.coords[va], re, im };
+}
+function niceStep(minStep) {
+  const m = Math.max(minStep, 1e-15);
+  const p = 10 ** Math.floor(Math.log10(m));
+  for (const f of [1, 2, 5, 10]) if (p * f >= m * (1 - 1e-9)) return p * f;
+  return p * 10;
+}
+function stepDecimals(step) {
+  return Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+}
+function ticksIn(lo, hi, step) {
+  const out = [];
+  const first = Math.ceil(lo / step - 1e-6);
+  const last2 = Math.floor(hi / step + 1e-6);
+  for (let k = first; k <= last2; k++) out.push(k * step);
+  return out;
+}
+function formatTick(v, decimals) {
+  const s = v.toFixed(decimals);
+  return /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;
+}
+var UNITS = [
+  [1, "m"],
+  [1e-3, "mm"],
+  [1e-6, "\xB5m"],
+  [1e-9, "nm"]
+];
+function lengthUnit(scale) {
+  for (const unit of UNITS) if (Math.abs(scale) >= unit[0]) return unit;
+  return UNITS[UNITS.length - 1];
+}
+
+// src/slice/outlines.ts
+var MAX_TRIANGLES = 3e5;
+function sliceOutlines(scene, normal, position, uAxis, vAxis) {
+  const out = [];
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const tri = [a, b, c];
+  const d = [0, 0, 0];
+  scene.updateMatrixWorld();
+  scene.traverseVisible((o) => {
+    const mesh = o;
+    if (!mesh.isMesh || !o.userData.objectId || o.userData.isGizmo) return;
+    const geometry = mesh.geometry;
+    const pos = geometry?.attributes?.position;
+    if (!pos) return;
+    const index = geometry.index;
+    const count = index ? index.count : pos.count;
+    if (count / 3 > MAX_TRIANGLES) return;
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    const box = geometry.boundingBox.clone().applyMatrix4(mesh.matrixWorld);
+    if (box.min.getComponent(normal) > position || box.max.getComponent(normal) < position) return;
+    for (let t = 0; t + 2 < count; t += 3) {
+      for (let k = 0; k < 3; k++) {
+        const vi = index ? index.getX(t + k) : t + k;
+        tri[k].fromBufferAttribute(pos, vi).applyMatrix4(mesh.matrixWorld);
+        d[k] = tri[k].getComponent(normal) - position;
+      }
+      const hits = [];
+      for (let k = 0; k < 3 && hits.length < 4; k++) {
+        const k2 = (k + 1) % 3;
+        if (d[k] < 0 === d[k2] < 0) continue;
+        const s = d[k] / (d[k] - d[k2]);
+        const p = tri[k];
+        const q = tri[k2];
+        hits.push(
+          p.getComponent(uAxis) + (q.getComponent(uAxis) - p.getComponent(uAxis)) * s,
+          p.getComponent(vAxis) + (q.getComponent(vAxis) - p.getComponent(vAxis)) * s
+        );
+      }
+      if (hits.length === 4) out.push(...hits);
+    }
+  });
+  return Float32Array.from(out);
+}
+
+// src/slice/slicePlot.ts
+var M = { left: 58, right: 100, top: 12, bottom: 42 };
+var TARGET_PX = 80;
+var AXIS = "xyz";
+var OUTLINE_ON_LIGHT = "rgba(29, 29, 33, 0.75)";
+var OUTLINE_ON_DARK = "rgba(250, 250, 250, 0.6)";
+var DIVERGING = /* @__PURE__ */ new Set(["rdbu", "coolwarm", "bwr"]);
+function readColors(el) {
+  const probe = document.createElement("span");
+  probe.style.display = "none";
+  el.appendChild(probe);
+  const resolve = (token, fallback) => {
+    probe.style.color = fallback;
+    probe.style.color = `var(${token}, ${fallback})`;
+    return getComputedStyle(probe).color;
+  };
+  const bg = resolve("--gray-2", "black");
+  const colors = {
+    backgroundCss: bg,
+    background: (bg.match(/[\d.]+/g) ?? ["0", "0", "0"]).slice(0, 3).map(Number),
+    ink: resolve("--text-primary", "white"),
+    ink2: resolve("--text-secondary", "gray"),
+    line: resolve("--border-strong", "gray"),
+    accent: resolve("--accent", "blue"),
+    font: getComputedStyle(el).getPropertyValue("--font-family").trim() || "sans-serif"
+  };
+  probe.remove();
+  return colors;
+}
+function colormapLut(name) {
+  const colour = getColormapFunc(name);
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const [r, g, b] = colour(i / 255);
+    lut.set([r * 255, g * 255, b * 255, 255], i * 4);
+  }
+  return lut;
+}
+function lutIndex(v, vmin, vmax, logScale) {
+  let n = (Math.min(v, vmax) - vmin) / (vmax - vmin + 1e-4);
+  n = Math.min(1, Math.max(0, n));
+  if (logScale) n = Math.log10(1 + 9 * n);
+  return Math.round(n * 255);
+}
+var SlicePlot = class {
+  constructor(canvas, onHover = () => {
+  }) {
+    this.canvas = canvas;
+    this.onHover = onHover;
+    __publicField(this, "params", null);
+    // View: centre in metres and metres per CSS pixel.
+    __publicField(this, "cu", 0);
+    __publicField(this, "cv", 0);
+    __publicField(this, "mpp", 1e-3);
+    __publicField(this, "fitted", false);
+    __publicField(this, "pixRe", new Float32Array(0));
+    __publicField(this, "pixIm", new Float32Array(0));
+    __publicField(this, "inside", new Uint8Array(0));
+    __publicField(this, "image", null);
+    __publicField(this, "lut", colormapLut("inferno"));
+    __publicField(this, "buffer", document.createElement("canvas"));
+    __publicField(this, "phase", 0);
+    __publicField(this, "drag", null);
+    __publicField(this, "box", null);
+    __publicField(this, "colors");
+    __publicField(this, "onLeave", () => this.onHover(null));
+    __publicField(this, "onDoubleClick", () => {
+      this.fitted = false;
+      this.resample();
+    });
+    // ---------- interaction ----------
+    __publicField(this, "onWheel", (e) => {
+      e.preventDefault();
+      const r = this.canvas.getBoundingClientRect();
+      const px = e.clientX - r.left;
+      const py = e.clientY - r.top;
+      const u = this.toU(px);
+      const v = this.toV(py);
+      this.mpp *= Math.exp(e.deltaY * 15e-4);
+      this.cu += u - this.toU(px);
+      this.cv += v - this.toV(py);
+      this.resample();
+    });
+    __publicField(this, "onDown", (e) => {
+      this.canvas.setPointerCapture(e.pointerId);
+      const r = this.canvas.getBoundingClientRect();
+      const x = e.clientX - r.left;
+      const y = e.clientY - r.top;
+      if (e.shiftKey) this.box = { x0: x, y0: y, x1: x, y1: y };
+      else this.drag = { x: e.clientX, y: e.clientY, cu: this.cu, cv: this.cv };
+    });
+    __publicField(this, "onMove", (e) => {
+      const r = this.canvas.getBoundingClientRect();
+      if (this.box) {
+        this.box.x1 = e.clientX - r.left;
+        this.box.y1 = e.clientY - r.top;
+        this.draw();
+      } else if (this.drag) {
+        this.cu = this.drag.cu - (e.clientX - this.drag.x) * this.mpp;
+        this.cv = this.drag.cv + (e.clientY - this.drag.y) * this.mpp;
+        this.resample();
+      }
+      this.hoverAt(e.clientX - r.left, e.clientY - r.top);
+    });
+    __publicField(this, "onUp", (e) => {
+      if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId);
+      this.drag = null;
+      const b = this.box;
+      this.box = null;
+      if (b && Math.abs(b.x1 - b.x0) > 6 && Math.abs(b.y1 - b.y0) > 6) {
+        const [ua, ub] = [this.toU(Math.min(b.x0, b.x1)), this.toU(Math.max(b.x0, b.x1))];
+        const [va, vb] = [this.toV(Math.max(b.y0, b.y1)), this.toV(Math.min(b.y0, b.y1))];
+        const { w, h } = this.plot;
+        this.cu = (ua + ub) / 2;
+        this.cv = (va + vb) / 2;
+        this.mpp = Math.max((ub - ua) / w, (vb - va) / h);
+        this.resample();
+      } else if (b) {
+        this.draw();
+      }
+    });
+    this.colors = readColors(canvas);
+    canvas.addEventListener("wheel", this.onWheel, { passive: false });
+    canvas.addEventListener("pointerdown", this.onDown);
+    canvas.addEventListener("pointermove", this.onMove);
+    canvas.addEventListener("pointerup", this.onUp);
+    canvas.addEventListener("pointerleave", this.onLeave);
+    canvas.addEventListener("dblclick", this.onDoubleClick);
+  }
+  get plot() {
+    const w = this.canvas.clientWidth;
+    const h = this.canvas.clientHeight;
+    return { x: M.left, y: M.top, w: Math.max(1, w - M.left - M.right), h: Math.max(1, h - M.top - M.bottom) };
+  }
+  /** New data. Refits the view when the slice moved to another plane or field. */
+  set(p, refit) {
+    const prev = this.params;
+    this.params = p;
+    if (refit || !prev) this.fitted = false;
+    if (!prev || prev.colormap !== p.colormap) this.lut = colormapLut(p.colormap);
+    if (!prev || prev.slice !== p.slice || refit) this.resample();
+    else this.draw();
+  }
+  setPhase(phase) {
+    this.phase = phase;
+    this.draw();
+  }
+  /** Call when the canvas's CSS size or the theme changes. */
+  resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.canvas.width = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
+    this.canvas.height = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+    this.colors = readColors(this.canvas);
+    this.resample();
+  }
+  fit() {
+    const { u, v } = this.params.slice;
+    const { w, h } = this.plot;
+    const [u0, u1, v0, v1] = [u[0], u[u.length - 1], v[0], v[v.length - 1]];
+    this.cu = (u0 + u1) / 2;
+    this.cv = (v0 + v1) / 2;
+    this.mpp = Math.max((u1 - u0) / w, (v1 - v0) / h, 1e-12) * 1.04;
+    this.fitted = true;
+  }
+  // Screen <-> world for the plot area.
+  toU(px) {
+    const { x, w } = this.plot;
+    return this.cu + (px - x - w / 2) * this.mpp;
+  }
+  toV(py) {
+    const { y, h } = this.plot;
+    return this.cv - (py - y - h / 2) * this.mpp;
+  }
+  sx(u) {
+    const { x, w } = this.plot;
+    return x + w / 2 + (u - this.cu) / this.mpp;
+  }
+  sy(v) {
+    const { y, h } = this.plot;
+    return y + h / 2 - (v - this.cv) / this.mpp;
+  }
+  /** Resolves every plot pixel to (Re, Im). Run when the view or slice changes. */
+  resample() {
+    if (!this.params) return;
+    if (!this.fitted) this.fit();
+    const { w, h } = this.plot;
+    const W = Math.round(w);
+    const H = Math.round(h);
+    const { u, v, re, im } = this.params.slice;
+    const nu = u.length;
+    const cols = Array.from({ length: W }, (_, i) => this.toU(M.left + i + 0.5));
+    const rows = Array.from({ length: H }, (_, j) => this.toV(M.top + j + 0.5));
+    const cu = cols.map((x) => locate(u, x));
+    const rv = rows.map((y) => locate(v, y));
+    const [u0, u1, v0, v1] = [u[0], u[nu - 1], v[0], v[v.length - 1]];
+    const du = nu > 1 ? 1 : 0;
+    const dv = v.length > 1 ? nu : 0;
+    this.pixRe = new Float32Array(W * H);
+    this.pixIm = new Float32Array(W * H);
+    this.inside = new Uint8Array(W * H);
+    for (let j = 0; j < H; j++) {
+      if (rows[j] < v0 || rows[j] > v1) continue;
+      const [jv, tv] = rv[j];
+      for (let i = 0; i < W; i++) {
+        if (cols[i] < u0 || cols[i] > u1) continue;
+        const [iu, tu] = cu[i];
+        const a = iu + nu * jv;
+        const o = i + W * j;
+        const w00 = (1 - tu) * (1 - tv);
+        const w10 = tu * (1 - tv);
+        const w01 = (1 - tu) * tv;
+        const w11 = tu * tv;
+        this.pixRe[o] = re[a] * w00 + re[a + du] * w10 + re[a + dv] * w01 + re[a + du + dv] * w11;
+        if (im) this.pixIm[o] = im[a] * w00 + im[a + du] * w10 + im[a + dv] * w01 + im[a + du + dv] * w11;
+        this.inside[o] = 1;
+      }
+    }
+    this.buffer.width = W;
+    this.buffer.height = H;
+    this.image = new ImageData(W, H);
+    this.draw();
+  }
+  /** Displayed (normalised) value at a resolved pixel. */
+  valueAt(o) {
+    const re = this.pixRe[o];
+    const im = this.pixIm[o];
+    const p = this.params;
+    if (p.quantity === "magnitude") return p.slice.im ? Math.hypot(re, im) : Math.abs(re);
+    return p.slice.im ? re * Math.cos(this.phase) + im * Math.sin(this.phase) : re;
+  }
+  paintHeatmap() {
+    const { legend } = this.params;
+    const d = this.image.data;
+    const lut = this.lut;
+    const bg = this.colors.background;
+    for (let o = 0; o < this.inside.length; o++) {
+      const k = o * 4;
+      if (!this.inside[o]) {
+        d[k] = bg[0];
+        d[k + 1] = bg[1];
+        d[k + 2] = bg[2];
+        d[k + 3] = 255;
+        continue;
+      }
+      const t = lutIndex(this.valueAt(o), legend.valueMin, legend.valueMax, legend.logScale) * 4;
+      d[k] = lut[t];
+      d[k + 1] = lut[t + 1];
+      d[k + 2] = lut[t + 2];
+      d[k + 3] = 255;
+    }
+    this.buffer.getContext("2d").putImageData(this.image, 0, 0);
+  }
+  draw() {
+    if (!this.params || !this.image) return;
+    const ctx = this.canvas.getContext("2d");
+    const dpr = this.canvas.width / Math.max(1, this.canvas.clientWidth);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = this.colors.backgroundCss;
+    ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
+    const plot = this.plot;
+    this.paintHeatmap();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(this.buffer, plot.x, plot.y, Math.round(plot.w), Math.round(plot.h));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.x, plot.y, plot.w, plot.h);
+    ctx.clip();
+    if (this.params.showGrid) this.drawGrid(ctx);
+    this.drawOutlines(ctx);
+    if (this.box) {
+      const { x0, y0, x1, y1 } = this.box;
+      ctx.strokeStyle = this.colors.accent;
+      ctx.fillStyle = this.colors.accent;
+      ctx.globalAlpha = 0.08;
+      ctx.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(Math.min(x0, x1) + 0.5, Math.min(y0, y1) + 0.5, Math.abs(x1 - x0), Math.abs(y1 - y0));
+    }
+    ctx.restore();
+    this.drawAxes(ctx);
+    this.drawColorbar(ctx);
+  }
+  drawOutlines(ctx) {
+    const seg = this.params.outlines;
+    if (!seg.length) return;
+    ctx.strokeStyle = DIVERGING.has(this.params.colormap) ? OUTLINE_ON_LIGHT : OUTLINE_ON_DARK;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let k = 0; k + 3 < seg.length; k += 4) {
+      ctx.moveTo(this.sx(seg[k]), this.sy(seg[k + 1]));
+      ctx.lineTo(this.sx(seg[k + 2]), this.sy(seg[k + 3]));
+    }
+    ctx.stroke();
+  }
+  drawGrid(ctx) {
+    const { u, v } = this.params.slice;
+    if (minSpacing(u) / this.mpp < 3 && minSpacing(v) / this.mpp < 3) return;
+    ctx.strokeStyle = this.colors.line;
+    ctx.globalAlpha = 0.35;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (const x of u) {
+      const X = Math.round(this.sx(x)) + 0.5;
+      ctx.moveTo(X, this.sy(v[0]));
+      ctx.lineTo(X, this.sy(v[v.length - 1]));
+    }
+    for (const y of v) {
+      const Y = Math.round(this.sy(y)) + 0.5;
+      ctx.moveTo(this.sx(u[0]), Y);
+      ctx.lineTo(this.sx(u[u.length - 1]), Y);
+    }
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  drawAxes(ctx) {
+    const plot = this.plot;
+    const { uAxis, vAxis, u, v } = this.params.slice;
+    const x0 = plot.x;
+    const y1 = plot.y + plot.h;
+    const [unit, unitName] = lengthUnit(Math.max(u[u.length - 1] - u[0], v[v.length - 1] - v[0]));
+    ctx.strokeStyle = this.colors.line;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(plot.x + 0.5, plot.y + 0.5, plot.w - 1, plot.h - 1);
+    ctx.font = `11px ${this.colors.font}`;
+    ctx.fillStyle = this.colors.ink2;
+    const major = niceStep(TARGET_PX * this.mpp / unit) * unit;
+    const dec = stepDecimals(major / unit);
+    const axis = (lo, hi, at, tick2, label) => {
+      ctx.beginPath();
+      for (const t of ticksIn(lo, hi, major / 5)) tick2(Math.round(at(t)) + 0.5, Math.abs(t / major - Math.round(t / major)) < 1e-6 ? 6 : 3);
+      ctx.stroke();
+      for (const t of ticksIn(lo, hi, major)) label(formatTick(t / unit, dec), at(t));
+    };
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    axis(
+      this.toU(plot.x),
+      this.toU(plot.x + plot.w),
+      (t) => this.sx(t),
+      (X, len) => {
+        ctx.moveTo(X, y1);
+        ctx.lineTo(X, y1 + len);
+      },
+      (s, X) => ctx.fillText(s, X, y1 + 8)
+    );
+    ctx.textAlign = "right";
+    ctx.textBaseline = "middle";
+    axis(
+      this.toV(plot.y + plot.h),
+      this.toV(plot.y),
+      (t) => this.sy(t),
+      (Y, len) => {
+        ctx.moveTo(x0, Y);
+        ctx.lineTo(x0 - len, Y);
+      },
+      (s, Y) => ctx.fillText(s, x0 - 8, Y)
+    );
+    ctx.fillStyle = this.colors.ink;
+    ctx.font = `500 12px ${this.colors.font}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${AXIS[uAxis]} (${unitName})`, plot.x + plot.w / 2, this.canvas.clientHeight - 4);
+    ctx.save();
+    ctx.translate(14, plot.y + plot.h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textBaseline = "middle";
+    ctx.fillText(`${AXIS[vAxis]} (${unitName})`, 0, 0);
+    ctx.restore();
+  }
+  drawColorbar(ctx) {
+    const { legend } = this.params;
+    const plot = this.plot;
+    const x = plot.x + plot.w + 18;
+    const h = Math.min(plot.h, 320);
+    const y = plot.y + (plot.h - h) / 2;
+    const colour = getColormapFunc(legend.colormap);
+    for (let j = 0; j < h; j++) {
+      let t = 1 - j / Math.max(1, h - 1);
+      if (legend.logScale) t = Math.log10(1 + 9 * t);
+      const [r, g, b] = colour(t);
+      ctx.fillStyle = `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+      ctx.fillRect(x, y + j, 12, 1);
+    }
+    ctx.strokeStyle = this.colors.line;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x + 0.5, y + 0.5, 11, h - 1);
+    ctx.fillStyle = this.colors.ink2;
+    ctx.font = `11px ${this.colors.font}`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    for (const [at, text] of legendTicks(legend)) ctx.fillText(text, x + 17, y + (1 - at) * (h - 1));
+    ctx.save();
+    ctx.translate(x + 66, y + h / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center";
+    ctx.fillStyle = this.colors.ink;
+    ctx.font = `500 12px ${this.colors.font}`;
+    ctx.fillText(legend.title, 0, 0);
+    ctx.restore();
+  }
+  /** The current canvas pixels, for PNG export. */
+  get element() {
+    return this.canvas;
+  }
+  /** One optical period as `count` frames, scaled to at most `maxWidth` px, for GIF export. */
+  captureFrames(count, maxWidth) {
+    const phase0 = this.phase;
+    const scale = Math.min(1, maxWidth / this.canvas.width);
+    const c = document.createElement("canvas");
+    c.width = Math.round(this.canvas.width * scale);
+    c.height = Math.round(this.canvas.height * scale);
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    const frames = [];
+    for (let k = 0; k < count; k++) {
+      this.setPhase(phase0 + 2 * Math.PI * k / count);
+      ctx.drawImage(this.canvas, 0, 0, c.width, c.height);
+      frames.push(ctx.getImageData(0, 0, c.width, c.height));
+    }
+    this.setPhase(phase0);
+    return frames;
+  }
+  hoverAt(px, py) {
+    const plot = this.plot;
+    const i = Math.floor(px - plot.x);
+    const j = Math.floor(py - plot.y);
+    const W = Math.round(plot.w);
+    const o = i + W * j;
+    if (!this.params || i < 0 || j < 0 || i >= W || j >= Math.round(plot.h) || !this.inside[o]) {
+      this.onHover(null);
+      return;
+    }
+    const { uAxis, vAxis } = this.params.slice;
+    const value = formatLegendValue(legendDataValue(this.params.legend, this.valueAt(o)));
+    this.onHover({ u: this.toU(px), v: this.toV(py), value, uLabel: AXIS[uAxis], vLabel: AXIS[vAxis] });
+  }
+  dispose() {
+    this.canvas.removeEventListener("wheel", this.onWheel);
+    this.canvas.removeEventListener("pointerdown", this.onDown);
+    this.canvas.removeEventListener("pointermove", this.onMove);
+    this.canvas.removeEventListener("pointerup", this.onUp);
+    this.canvas.removeEventListener("pointerleave", this.onLeave);
+    this.canvas.removeEventListener("dblclick", this.onDoubleClick);
+  }
+};
+function minSpacing(a) {
+  let m = Infinity;
+  for (let i = 1; i < a.length; i++) m = Math.min(m, a[i] - a[i - 1]);
+  return m;
+}
+
+// src/slice/viewportHandle.ts
+var handle = null;
+function viewportHandle() {
+  return handle;
+}
+function ViewportHandlePass() {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    const mine = { canvas: gl.domElement, scene, invalidate };
+    handle = mine;
+    return () => {
+      if (handle === mine) handle = null;
+    };
+  }, [gl, scene, invalidate]);
+  return null;
+}
+
+// src/slice/FieldSlicePanel.tsx
+var GIF_FRAMES = 24;
+var GIF_MAX_WIDTH = 720;
+var MOVIE_FRAMES = 60;
+function fieldComponent(object) {
+  const components = Array.isArray(object.components) ? object.components : [];
+  return components.find((c) => c?.name === "Field" || c?.base_classes?.includes?.("Field")) ?? null;
+}
+function fieldOf(object) {
+  const component = object && fieldComponent(object);
+  if (!component) return null;
+  const data = fieldVisualizerConfig.extractor(component, object);
+  return data?.volume ? data : null;
+}
+function pickField(host, previous) {
+  const objects = host.scene.getObjects();
+  const selected = host.scene.getSelection().find((id) => fieldOf(objects[id]));
+  if (selected) return selected;
+  if (previous && fieldOf(objects[previous])) return previous;
+  return Object.keys(objects).find((id) => fieldOf(objects[id])) ?? null;
+}
+function useSceneVersion(host) {
+  const [version, setVersion] = useState(0);
+  useEffect(() => host.scene.subscribe(() => setVersion((v) => v + 1)), [host]);
+  return version;
+}
+function useFieldGrid(host, data) {
+  const [state2, setState] = useState({ grid: null, error: null });
+  const re = data?.volume ?? null;
+  const im = data?.volume_im ?? null;
+  const axesKey = data ? JSON.stringify([data.axis_coords, data.min_bound, data.max_bound]) : "";
+  useEffect(() => {
+    if (!re || !data) {
+      setState({ grid: null, error: null });
+      return void 0;
+    }
+    let cancelled = false;
+    const loaded = [];
+    (async () => {
+      try {
+        const [r, i] = await Promise.all([host.assets.loadVolume(re), im ? host.assets.loadVolume(im) : Promise.resolve(null)]);
+        loaded.push(r, ...i ? [i] : []);
+        if (cancelled) return;
+        const coords = gridCoords(r.resolution, data.min_bound ?? [-5, -5, -5], data.max_bound ?? [5, 5, 5], data.axis_coords ?? null);
+        setState({ grid: { coords, re: r.data, im: i?.data ?? null }, error: null });
+      } catch (err) {
+        if (!cancelled) setState({ grid: null, error: err?.message || "Failed to load the field" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+      loaded.forEach((r) => host.assets.release(r));
+    };
+  }, [host, re?.assetId, re?.uri, im?.assetId, im?.uri, axesKey]);
+  return state2;
+}
+function useElementSize(ref, onResize) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return void 0;
+    const observer = new ResizeObserver(() => onResize());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref.current]);
+}
+function canvasBlob(canvas) {
+  return new Promise((resolve, reject) => canvas.toBlob((b) => b ? resolve(b) : reject(new Error("Canvas export failed")), "image/png"));
+}
+function fileStem(name) {
+  return (name || "field").replace(/[^\w.-]+/g, "_");
+}
+var styles = {
+  root: { display: "flex", flexDirection: "column", height: "100%", minHeight: 0, background: "var(--gray-2)", color: "var(--text-primary)", font: "12px var(--font-family)" },
+  toolbar: {
+    display: "flex",
+    alignItems: "center",
+    gap: 4,
+    height: "var(--header-h)",
+    boxSizing: "border-box",
+    padding: "0 8px",
+    background: "var(--gray-3)",
+    borderBottom: "1px solid var(--border-subtle)",
+    flex: "none"
+  },
+  name: { fontWeight: 500, marginRight: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  status: { marginLeft: "auto", color: "var(--text-secondary)", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" },
+  stage: { position: "relative", flex: 1, minHeight: 0 },
+  canvas: { position: "absolute", inset: 0, width: "100%", height: "100%", cursor: "crosshair", touchAction: "none" },
+  empty: { display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-secondary)" }
+};
+function createFieldSlicePanel(host) {
+  const HostButton = host.ui?.Button;
+  function ToolButton({ label, icon, onClick, disabled, active }) {
+    const content = /* @__PURE__ */ React.createElement(React.Fragment, null, icon, /* @__PURE__ */ React.createElement("span", null, label));
+    return HostButton ? /* @__PURE__ */ React.createElement(HostButton, { variant: "ghost", size: "sm", onClick, disabled, active, "aria-label": label }, content) : /* @__PURE__ */ React.createElement("button", { type: "button", onClick, disabled, "aria-label": label, "aria-pressed": active }, content);
+  }
+  return function FieldSlicePanel() {
+    const version = useSceneVersion(host);
+    const shownRef = useRef(null);
+    const objectId = useMemo(() => {
+      shownRef.current = pickField(host, shownRef.current);
+      return shownRef.current;
+    }, [version]);
+    const object = objectId ? host.scene.getObjects()[objectId] : void 0;
+    const data = fieldOf(object);
+    const { grid, error } = useFieldGrid(host, data);
+    const plane = data?.dimension === "2D" ? data.plane : data?.plane_axis;
+    const position = data?.dimension === "2D" ? 0.5 : data?.plane_position ?? 0.5;
+    const slice = useMemo(() => grid && plane ? sliceGrid(grid, plane, position) : null, [grid, plane, position]);
+    const outlines = useMemo(() => {
+      const scene = viewportHandle()?.scene;
+      return slice && scene ? sliceOutlines(scene, slice.normal, slice.position, slice.uAxis, slice.vAxis) : new Float32Array(0);
+    }, [slice, version]);
+    const legend = data ? fieldLegendSpec(data) : null;
+    const legendKey = JSON.stringify(legend);
+    const animatable = !!grid?.im && data?.field_quantity !== "magnitude";
+    const clock = usePhaseClock();
+    const phase = clock.playing ? clock.phase : data?.field_phase ?? 0;
+    const canvasRef = useRef(null);
+    const stageRef = useRef(null);
+    const plotRef = useRef(null);
+    const [hover, setHover] = useState(null);
+    const [busy, setBusy] = useState(null);
+    const [message, setMessage] = useState(null);
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return void 0;
+      const plot2 = new SlicePlot(canvas, setHover);
+      plotRef.current = plot2;
+      plot2.resize();
+      return () => {
+        plot2.dispose();
+        plotRef.current = null;
+      };
+    }, [slice !== null]);
+    useElementSize(stageRef, () => plotRef.current?.resize());
+    const fitKey = `${objectId}|${plane}`;
+    const lastFit = useRef("");
+    useEffect(() => {
+      const plot2 = plotRef.current;
+      if (!plot2 || !slice || !legend || !data) return;
+      const refit = lastFit.current !== fitKey;
+      lastFit.current = fitKey;
+      plot2.set({ slice, quantity: data.field_quantity ?? "value", colormap: data.colormap ?? "inferno", showGrid: !!data.show_grid, legend, outlines }, refit);
+    }, [slice, legendKey, outlines, data?.field_quantity, data?.colormap, data?.show_grid, fitKey]);
+    useEffect(() => {
+      plotRef.current?.setPhase(phase);
+    }, [phase, slice]);
+    useEffect(() => () => void (phaseClock.get().playing && phaseClock.pause()), []);
+    const writePhase = (value) => {
+      if (!objectId || !data?.componentName) return;
+      void host.sceneWrites.updateComponentField(objectId, data.componentName, "field_phase", value);
+    };
+    const togglePlay = () => {
+      if (clock.playing) writePhase(phaseClock.pause());
+      else phaseClock.play(data?.field_phase ?? 0);
+    };
+    const run = async (label, job) => {
+      setBusy(label);
+      setMessage(null);
+      try {
+        await job();
+      } catch (err) {
+        setMessage(err?.message || `${label} failed`);
+      } finally {
+        setBusy(null);
+      }
+    };
+    const stem = fileStem(object?.name ?? "field");
+    const plot = plotRef.current;
+    const exportPng = () => run("Saving PNG", async () => {
+      if (plot) saveBlob(await canvasBlob(plot.element), `${stem}-slice.png`);
+    });
+    const exportGif = () => run("Encoding GIF", async () => {
+      if (!plot) return;
+      await new Promise((r) => setTimeout(r, 30));
+      const frames = plot.captureFrames(GIF_FRAMES, GIF_MAX_WIDTH);
+      const bytes = encodeGif(frames, PERIOD_MS / GIF_FRAMES);
+      saveBlob(new Blob([bytes], { type: "image/gif" }), `${stem}-slice.gif`);
+    });
+    const exportMovie = () => run("Recording WebM", async () => {
+      if (!plot) return;
+      const phase0 = phase;
+      const blob = await encodeCanvasMovie(plot.element, (f) => plot.setPhase(phase0 + 2 * Math.PI * f / MOVIE_FRAMES), {
+        frames: MOVIE_FRAMES,
+        fps: 30
+      });
+      plot.setPhase(phase0);
+      saveBlob(blob, `${stem}-slice.webm`);
+    });
+    const recordViewport = () => run("Recording viewport", async () => {
+      const handle2 = viewportHandle();
+      if (!handle2) throw new Error("The viewport is not open");
+      const wasPlaying = phaseClock.get().playing;
+      if (animatable && !wasPlaying) phaseClock.play(phase);
+      handle2.invalidate();
+      try {
+        saveBlob(await recordCanvas(handle2.canvas, PERIOD_MS), `${stem}-viewport.webm`);
+      } finally {
+        if (animatable && !wasPlaying) phaseClock.pause();
+      }
+    });
+    const unit = slice ? lengthUnit(Math.max(slice.u[slice.u.length - 1] - slice.u[0], slice.v[slice.v.length - 1] - slice.v[0])) : null;
+    const readout = hover && unit ? `${hover.uLabel} ${(hover.u / unit[0]).toFixed(3)}  ${hover.vLabel} ${(hover.v / unit[0]).toFixed(3)} ${unit[1]}   ${hover.value}` : null;
+    const status = busy ? `${busy}\u2026` : message ?? readout ?? (error ? error : "");
+    const disabled = !slice || !!busy;
+    return /* @__PURE__ */ React.createElement("div", { style: styles.root, "data-testid": "field-slice-panel" }, /* @__PURE__ */ React.createElement("div", { style: styles.toolbar }, /* @__PURE__ */ React.createElement("span", { style: styles.name }, object?.name ?? "Field Slice"), /* @__PURE__ */ React.createElement(
+      ToolButton,
+      {
+        label: clock.playing ? "Pause" : "Play",
+        icon: clock.playing ? /* @__PURE__ */ React.createElement(Pause, { size: 14 }) : /* @__PURE__ */ React.createElement(Play, { size: 14 }),
+        onClick: togglePlay,
+        disabled: disabled || !animatable,
+        active: clock.playing
+      }
+    ), /* @__PURE__ */ React.createElement(ToolButton, { label: "PNG", icon: /* @__PURE__ */ React.createElement(ImageDown, { size: 14 }), onClick: exportPng, disabled }), /* @__PURE__ */ React.createElement(ToolButton, { label: "GIF", icon: /* @__PURE__ */ React.createElement(Film, { size: 14 }), onClick: exportGif, disabled: disabled || !animatable }), /* @__PURE__ */ React.createElement(ToolButton, { label: "WebM", icon: /* @__PURE__ */ React.createElement(Clapperboard, { size: 14 }), onClick: exportMovie, disabled: disabled || !animatable }), /* @__PURE__ */ React.createElement(ToolButton, { label: "Viewport", icon: /* @__PURE__ */ React.createElement(Video, { size: 14 }), onClick: recordViewport, disabled: !!busy }), /* @__PURE__ */ React.createElement("span", { style: styles.status }, status)), /* @__PURE__ */ React.createElement("div", { style: styles.stage, ref: stageRef }, slice ? /* @__PURE__ */ React.createElement("canvas", { ref: canvasRef, style: styles.canvas }) : /* @__PURE__ */ React.createElement("div", { style: styles.empty }, error ?? "No field data")));
+  };
+}
+
 // src/activate.tsx
 function findComponent(object, predicate) {
   const components = Array.isArray(object.components) ? object.components : [];
@@ -3944,6 +5181,14 @@ function activateRenderingViewport(host) {
     id: "witwin.volume.depth",
     priority: -100,
     component: VolumeDepthPrepass_default
+  });
+  host.registerPass({ id: "witwin.volume.viewportHandle", component: ViewportHandlePass });
+  host.registerPanel({
+    id: "witwin.volume.fieldSlice",
+    title: "Field Slice",
+    icon: "scan-line",
+    component: createFieldSlicePanel(host),
+    track: "peer"
   });
   host.registerVisualizer({
     id: "witwin.volume.field",

@@ -108,6 +108,17 @@ export interface ViewportSceneWriteApi {
   ): Promise<void>;
 }
 
+/** A native React panel (host SDK RFC-014; layout fields since SDK 1.8). */
+export interface PanelConfig {
+  id: string;
+  title: string;
+  /** lucide-react icon name. */
+  icon?: string;
+  component: ComponentType<{ panelId: string }>;
+  track?: 'side' | 'bottom' | 'peer';
+  family?: string;
+}
+
 export interface ViewportHost {
   readonly version: string;
   readonly pluginId: string;
@@ -116,6 +127,7 @@ export interface ViewportHost {
   registerOverlay(zone: OverlayZone, render: () => ReactNode): Disposable;
   registerPass(pass: RenderPass): Disposable;
   registerTool(tool: ViewportTool): Disposable;
+  registerPanel(cfg: PanelConfig): Disposable;
   readonly scene: {
     getObjects(): Record<string, HostSceneObject>;
     getSelection(): string[];
@@ -126,6 +138,8 @@ export interface ViewportHost {
   readonly assets: ViewportAssetsApi;
   readonly interaction: ViewportInteractionApi;
   readonly sceneWrites: ViewportSceneWriteApi;
+  /** Host widgets for native panels; Button since SDK 1.2. */
+  readonly ui: { Button?: ComponentType<any> };
 }
 
 export interface ViewportHostModule {

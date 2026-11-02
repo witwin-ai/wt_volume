@@ -18,6 +18,15 @@ const args = new Set(process.argv.slice(2));
 const watch = args.has('--watch');
 const analyze = args.has('--analyze');
 
+// Bundled npm packages (lucide-react) resolve from the Studio checkout, and
+// their 'react' import goes to the host singleton, never a second copy.
+const hostReactPlugin = {
+  name: 'host-react',
+  setup(build) {
+    build.onResolve({ filter: /^react$/ }, () => ({ path: path.join(packageRoot, 'src/vendor/react-host.ts') }));
+  },
+};
+
 const options = {
   entryPoints: [path.join(packageRoot, 'src/viewport.ts')],
   bundle: true,
@@ -32,6 +41,8 @@ const options = {
       jsx: 'react',
     },
   },
+  nodePaths: [path.join(studioDir, 'node_modules')],
+  plugins: [hostReactPlugin],
   outfile: path.join(packageRoot, 'viewport.js'),
   sourcemap: false,
   metafile: analyze,

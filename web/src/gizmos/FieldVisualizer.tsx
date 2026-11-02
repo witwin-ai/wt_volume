@@ -6,7 +6,8 @@ import { getComponentValue, inheritsFrom } from './utils';
 import { bindFieldUniforms, createFieldUniforms, useFieldTextures, type FieldQuantity } from '../field/fieldTextures';
 import { createColormapTexture } from '../shaders/volumeShaders';
 import { planeSliceVertexShader, planeSliceFragmentShader } from '../shaders/planeSliceShaders';
-import { legendTitle, useFieldLegend } from '../field/fieldLegend';
+import { fieldLegendSpec, useFieldLegend } from '../field/fieldLegend';
+import { usePhaseClock } from '../slice/phaseClock';
 import { calculateFieldEdgeHitRadius } from './fieldHitTarget';
 import { SOFT_SELECTION_HIT_AREA_FLAG } from './selectionHitTarget';
 import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
@@ -176,38 +177,23 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     field_phase = 0,
     resolution = [128, 128, 128],
     display_range = [0.0, 1.0],
-    value_range = null,
     show_legend = true,
-    legend_title = '',
-    field_unit = '',
     slice_style = 'Flat',
     height_scale = 0.2,
   } = fieldData;
 
-  // Volume data is already normalized in backend (set_volume_data): a real
-  // field to 0-1, a complex field by its peak |E| so re/im lie in -1..1.
-  // display_range (0-1) therefore maps directly to the shader's value range.
-  const complexField = !!volume_im;
-  // Re(E e^{-i phase}) is signed: show -max..max on a diverging colormap
-  // and keep the negative half instead of discarding it.
-  const signed = complexField && field_quantity !== 'magnitude';
-  const valueMin = signed ? -display_range[1] : display_range[0];
-  const valueMax = display_range[1];
+  const legend = fieldLegendSpec(fieldData);
+  const { signed, valueMin, valueMax } = legend;
+  useFieldLegend(render_mode === 'Slices' && show_legend && volume ? legend : null);
 
-  useFieldLegend(
-    render_mode === 'Slices' && show_legend && volume
-      ? {
-          title: legendTitle(legend_title, field_unit, complexField, field_quantity === 'magnitude', !!value_range),
-          colormap,
-          valueMin,
-          valueMax,
-          signed,
-          logScale: log_colormap,
-          complex: complexField,
-          valueRange: value_range,
-        }
-      : null,
-  );
+  // While the 2D slice panel plays the phase, every complex field follows its clock.
+  const clock = usePhaseClock();
+  const animating = clock.playing && !!volume_im;
+  const phase = animating ? clock.phase : field_phase;
+  const invalidate = useThree((s) => s.invalidate);
+  useEffect(() => {
+    if (animating) invalidate();
+  }, [animating, phase, invalidate]);
 
   const colormapTextureRef = useRef<ThreeTypes.DataTexture | null>(null);
   const sliceMeshRef = useRef<ThreeTypes.Mesh | null>(null);
@@ -286,7 +272,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
     logColormap: log_colormap,
     signed,
     quantity: field_quantity as FieldQuantity,
-    phase: field_phase,
+    phase,
     heightAmount: 0, // set below, once the plane size is known
   };
 
