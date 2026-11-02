@@ -170,6 +170,10 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
   }, [axis]);
 
   const handlePointerDown = useCallback((e: ThreeEvent<PointerEvent>) => {
+    // Only the left button drags. Right and middle drags move the camera
+    // (orbit, pan, fly); a press that starts on a handle must not also
+    // resize the box, or an orbit across it rewrites the domain.
+    if (e.button !== 0) return;
     e.stopPropagation();
     setIsDragging(true);
     setGizmoDragging(true);

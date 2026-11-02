@@ -2736,6 +2736,7 @@ var FieldHandle = ({
     return constrained;
   }, [axis]);
   const handlePointerDown = useCallback((e) => {
+    if (e.button !== 0) return;
     e.stopPropagation();
     setIsDragging(true);
     setGizmoDragging(true);
@@ -3089,6 +3090,7 @@ var FieldHeightSlider = ({
     return intersection;
   }, [camera, gl]);
   const handlePointerDown = useCallback((e) => {
+    if (e.button !== 0) return;
     e.stopPropagation();
     setIsDragging(true);
     setGizmoDragging(true);
