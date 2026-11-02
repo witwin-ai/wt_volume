@@ -46,7 +46,7 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
   const dragStartRef = useRef<{ height: number; worldY: number } | null>(null);
   const planeRef = useRef<ThreeTypes.Plane | null>(null);
   // Store parent world position at drag start for consistent coordinate transformation
-  const parentWorldPosRef = useRef<ThreeTypes.Vector3>(new THREE.Vector3());
+  const groupWorldInverseRef = useRef<ThreeTypes.Matrix4>(new THREE.Matrix4());
   // Track latest height during drag to avoid stale closure issues
   const latestHeightRef = useRef<number>(height);
 
@@ -196,9 +196,11 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
     setIsDragging(true);
     setGizmoDragging(true);
 
-    // Capture parent group's world position for coordinate transformation
+    // World to slider-local transform. A full inverse, not a position
+    // offset: the field may sit under a scaled root (Studio's Bench display
+    // scale), where world lengths are not local lengths.
     if (groupRef.current) {
-      groupRef.current.getWorldPosition(parentWorldPosRef.current);
+      groupWorldInverseRef.current.copy(groupRef.current.matrixWorld).invert();
     }
 
     if (handleRef.current) {
@@ -223,8 +225,7 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
       const intersection = intersectPlane(moveEvent);
       if (!intersection) return;
 
-      // Transform intersection from world to local coordinates by subtracting parent's world position
-      const localIntersection = intersection.clone().sub(parentWorldPosRef.current);
+      const localIntersection = intersection.clone().applyMatrix4(groupWorldInverseRef.current);
 
       // Project the intersection onto the slider axis line to ignore perpendicular movement
       // Formula: projected = startPoint + axisDir * dot(localIntersection - startPoint, axisDir)

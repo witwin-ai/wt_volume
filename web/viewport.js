@@ -2066,9 +2066,14 @@ function fieldGizmoUnit(minBound, maxBound) {
   const largest = Math.max(0, ...[0, 1, 2].map((i) => Math.abs((maxBound[i] ?? 0) - (minBound[i] ?? 0))));
   return largest > EPSILON * EPSILON ? Math.min(1, largest / 2) : 1;
 }
+function parentWorldScale(object) {
+  const s = new THREE.Vector3(1, 1, 1);
+  object.parent?.getWorldScale(s);
+  return Math.max(Math.min(Math.abs(s.x), Math.abs(s.y), Math.abs(s.z)), 1e-12);
+}
 function screenConstantScale(camera, object, viewportHeightPx, pxPerUnit = 2) {
   const worldPoint = object.getWorldPosition(new THREE.Vector3());
-  return getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit;
+  return getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit / parentWorldScale(object);
 }
 function calculateFieldEdgeHitRadius({
   camera,
@@ -2079,9 +2084,10 @@ function calculateFieldEdgeHitRadius({
   targetHitWidthPx = FIELD_EDGE_HIT_WIDTH_PX,
   minRadius = FIELD_EDGE_HIT_MIN_RADIUS,
   maxRadius = FIELD_EDGE_HIT_MAX_RADIUS,
-  fieldFraction = FIELD_EDGE_HIT_FIELD_FRACTION
+  fieldFraction = FIELD_EDGE_HIT_FIELD_FRACTION,
+  worldScale = 1
 }) {
-  const screenRadius = getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * targetHitWidthPx / 2;
+  const screenRadius = getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * targetHitWidthPx / 2 / worldScale;
   const shortestExtent = getShortestPositiveFieldExtent(minBound, maxBound);
   const fieldRadiusCap = shortestExtent > EPSILON ? shortestExtent * fieldFraction : maxRadius;
   return clamp(Math.min(screenRadius, fieldRadiusCap), Math.min(minRadius, fieldRadiusCap), maxRadius);
@@ -2136,17 +2142,14 @@ var FieldEdgeHitArea = ({ edge, minBound, maxBound }) => {
     if (!mesh) return;
     const worldMid = new THREE.Vector3();
     mesh.getWorldPosition(worldMid);
-    const worldRadius = calculateFieldEdgeHitRadius({
+    const localRadius = calculateFieldEdgeHitRadius({
       camera,
       worldPoint: worldMid,
       viewportHeightPx: size.height,
       minBound,
-      maxBound
+      maxBound,
+      worldScale: parentWorldScale(mesh)
     });
-    const worldScale = new THREE.Vector3(1, 1, 1);
-    mesh.parent?.getWorldScale(worldScale);
-    const localScale = Math.min(Math.abs(worldScale.x), Math.abs(worldScale.y), Math.abs(worldScale.z));
-    const localRadius = worldRadius / Math.max(localScale, 1e-6);
     mesh.scale.set(localRadius, length, localRadius);
   });
   return /* @__PURE__ */ React.createElement(
@@ -2979,7 +2982,7 @@ var FieldHeightSlider = ({
   const labelRef = useRef(null);
   const dragStartRef = useRef(null);
   const planeRef = useRef(null);
-  const parentWorldPosRef = useRef(new THREE.Vector3());
+  const groupWorldInverseRef = useRef(new THREE.Matrix4());
   const latestHeightRef = useRef(height);
   React.useEffect(() => {
     if (!isDragging) {
@@ -3095,7 +3098,7 @@ var FieldHeightSlider = ({
     setIsDragging(true);
     setGizmoDragging(true);
     if (groupRef.current) {
-      groupRef.current.getWorldPosition(parentWorldPosRef.current);
+      groupWorldInverseRef.current.copy(groupRef.current.matrixWorld).invert();
     }
     if (handleRef.current) {
       const worldPos = new THREE.Vector3();
@@ -3112,7 +3115,7 @@ var FieldHeightSlider = ({
       if (!dragStartRef.current || !planeRef.current) return;
       const intersection = intersectPlane(moveEvent);
       if (!intersection) return;
-      const localIntersection = intersection.clone().sub(parentWorldPosRef.current);
+      const localIntersection = intersection.clone().applyMatrix4(groupWorldInverseRef.current);
       const toIntersection = localIntersection.clone().sub(sliderConfig.startPoint);
       const projectedDistance = toIntersection.dot(sliderConfig.axisDir);
       let newHeight = projectedDistance / sliderConfig.axisLength;

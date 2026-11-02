@@ -8,7 +8,7 @@ import { createColormapTexture } from '../shaders/volumeShaders';
 import { planeSliceVertexShader, planeSliceFragmentShader } from '../shaders/planeSliceShaders';
 import { fieldLegendSpec, useFieldLegend } from '../field/fieldLegend';
 import { usePhaseClock } from '../slice/phaseClock';
-import { calculateFieldEdgeHitRadius, fieldGizmoUnit } from './fieldHitTarget';
+import { calculateFieldEdgeHitRadius, fieldGizmoUnit, parentWorldScale } from './fieldHitTarget';
 import { SOFT_SELECTION_HIT_AREA_FLAG } from './selectionHitTarget';
 import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
 
@@ -124,18 +124,14 @@ const FieldEdgeHitArea: ReactTypes.FC<FieldEdgeHitAreaProps> = ({ edge, minBound
 
     const worldMid = new THREE.Vector3();
     mesh.getWorldPosition(worldMid);
-    const worldRadius = calculateFieldEdgeHitRadius({
+    const localRadius = calculateFieldEdgeHitRadius({
       camera,
       worldPoint: worldMid,
       viewportHeightPx: size.height,
       minBound,
       maxBound,
+      worldScale: parentWorldScale(mesh),
     });
-
-    const worldScale = new THREE.Vector3(1, 1, 1);
-    mesh.parent?.getWorldScale(worldScale);
-    const localScale = Math.min(Math.abs(worldScale.x), Math.abs(worldScale.y), Math.abs(worldScale.z));
-    const localRadius = worldRadius / Math.max(localScale, 1e-6);
     mesh.scale.set(localRadius, length, localRadius);
   });
 

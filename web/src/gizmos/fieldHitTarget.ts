@@ -55,11 +55,23 @@ export function fieldGizmoUnit(minBound: number[], maxBound: number[]): number {
 }
 
 /**
+ * World units per local unit of `object`'s parent: the smallest axis of its
+ * world scale. Studio draws small Bench scenes under a scaled root (1 m of
+ * scene = 10^k world units), so a gizmo's local size is not its world size.
+ */
+export function parentWorldScale(object: ThreeTypes.Object3D): number {
+  const s = new THREE.Vector3(1, 1, 1);
+  object.parent?.getWorldScale(s);
+  return Math.max(Math.min(Math.abs(s.x), Math.abs(s.y), Math.abs(s.z)), 1e-12);
+}
+
+/**
  * Scale that keeps gizmo geometry a fixed size on screen: one geometry unit
  * becomes `pxPerUnit` pixels. Scaling by camera distance instead breaks in an
  * orthographic view, where zoom (not distance) sets the on-screen size; a
  * micrometre field then got centimetre handles that covered the viewport.
  * The default of 2 px keeps the old perspective look (fov 50, ~900 px tall).
+ * Returned as a local scale, so it divides by the parent's world scale.
  */
 export function screenConstantScale(
   camera: ThreeTypes.Camera,
@@ -68,7 +80,7 @@ export function screenConstantScale(
   pxPerUnit = 2,
 ): number {
   const worldPoint = object.getWorldPosition(new THREE.Vector3());
-  return getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit;
+  return (getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit) / parentWorldScale(object);
 }
 
 export interface FieldEdgeHitRadiusOptions {
@@ -81,6 +93,8 @@ export interface FieldEdgeHitRadiusOptions {
   minRadius?: number;
   maxRadius?: number;
   fieldFraction?: number;
+  /** World units per unit of minBound/maxBound and of the returned radius. */
+  worldScale?: number;
 }
 
 export function calculateFieldEdgeHitRadius({
@@ -93,8 +107,10 @@ export function calculateFieldEdgeHitRadius({
   minRadius = FIELD_EDGE_HIT_MIN_RADIUS,
   maxRadius = FIELD_EDGE_HIT_MAX_RADIUS,
   fieldFraction = FIELD_EDGE_HIT_FIELD_FRACTION,
+  worldScale = 1,
 }: FieldEdgeHitRadiusOptions): number {
-  const screenRadius = getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * targetHitWidthPx / 2;
+  // In the field's own units (metres), like the bounds and the radius limits.
+  const screenRadius = (getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * targetHitWidthPx) / 2 / worldScale;
   const shortestExtent = getShortestPositiveFieldExtent(minBound, maxBound);
   const fieldRadiusCap = shortestExtent > EPSILON ? shortestExtent * fieldFraction : maxRadius;
 
