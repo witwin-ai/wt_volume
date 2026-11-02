@@ -2,6 +2,7 @@ import type ReactTypes from 'react';
 import type * as ThreeTypes from 'three';
 import { React, THREE, useCallback, useRef, useState, useThree, useFrame } from '../runtime';
 import type { ThreeEvent } from '../runtime';
+import { screenConstantScale } from './fieldHitTarget';
 
 export type HandleType = 'corner' | 'edge' | 'face';
 export type AxisConstraint = 'x' | 'y' | 'z' | 'xy' | 'xz' | 'yz' | 'xyz';
@@ -41,7 +42,7 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
   const meshRef = useRef<ThreeTypes.Mesh>(null);
 
   const dragStartRef = useRef<ThreeTypes.Vector3 | null>(null);
@@ -49,21 +50,12 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
   const initialPositionRef = useRef<[number, number, number]>([0, 0, 0]);
   const parentMatrixWorldInverseRef = useRef<ThreeTypes.Matrix4 | null>(null);
 
-  // Screen-space handle size (will be scaled based on camera distance)
-  // Larger values = bigger handles on screen
+  // Handle size in screen units; see screenConstantScale.
   const baseScreenSize = type === 'corner' ? 14 : type === 'edge' ? 16 : 18;
 
-  // Update handle scale based on camera distance to maintain constant screen size
   useFrame(() => {
     if (meshRef.current) {
-      const worldPos = new THREE.Vector3();
-      meshRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-
-      // Scale to maintain constant screen size
-      // The divisor controls how big the handle appears on screen
-      const scale = distance * baseScreenSize / 500;
-      meshRef.current.scale.setScalar(scale);
+      meshRef.current.scale.setScalar(screenConstantScale(camera, meshRef.current, size.height) * baseScreenSize);
     }
   });
 

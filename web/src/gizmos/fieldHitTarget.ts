@@ -43,6 +43,34 @@ export function getWorldUnitsPerScreenPixel(
   return 0;
 }
 
+/**
+ * World length that gizmo offsets and labels are written in: 1 m for fields
+ * of 2 m and up (the size they were tuned for), shrinking with smaller
+ * fields so a micrometre field keeps its slider and label next to it
+ * instead of a metre away.
+ */
+export function fieldGizmoUnit(minBound: number[], maxBound: number[]): number {
+  const largest = Math.max(0, ...[0, 1, 2].map((i) => Math.abs((maxBound[i] ?? 0) - (minBound[i] ?? 0))));
+  return largest > EPSILON * EPSILON ? Math.min(1, largest / 2) : 1;
+}
+
+/**
+ * Scale that keeps gizmo geometry a fixed size on screen: one geometry unit
+ * becomes `pxPerUnit` pixels. Scaling by camera distance instead breaks in an
+ * orthographic view, where zoom (not distance) sets the on-screen size; a
+ * micrometre field then got centimetre handles that covered the viewport.
+ * The default of 2 px keeps the old perspective look (fov 50, ~900 px tall).
+ */
+export function screenConstantScale(
+  camera: ThreeTypes.Camera,
+  object: ThreeTypes.Object3D,
+  viewportHeightPx: number,
+  pxPerUnit = 2,
+): number {
+  const worldPoint = object.getWorldPosition(new THREE.Vector3());
+  return getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit;
+}
+
 export interface FieldEdgeHitRadiusOptions {
   camera: ThreeTypes.Camera;
   worldPoint: ThreeTypes.Vector3;
@@ -70,5 +98,7 @@ export function calculateFieldEdgeHitRadius({
   const shortestExtent = getShortestPositiveFieldExtent(minBound, maxBound);
   const fieldRadiusCap = shortestExtent > EPSILON ? shortestExtent * fieldFraction : maxRadius;
 
-  return clamp(Math.min(screenRadius, fieldRadiusCap), minRadius, maxRadius);
+  // minRadius suits metre-scale boxes; it must not make the edge of a
+  // micrometre box centimetres thick, so the field cap wins below it.
+  return clamp(Math.min(screenRadius, fieldRadiusCap), Math.min(minRadius, fieldRadiusCap), maxRadius);
 }

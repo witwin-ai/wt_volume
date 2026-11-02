@@ -2062,6 +2062,14 @@ function getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) {
   }
   return 0;
 }
+function fieldGizmoUnit(minBound, maxBound) {
+  const largest = Math.max(0, ...[0, 1, 2].map((i) => Math.abs((maxBound[i] ?? 0) - (minBound[i] ?? 0))));
+  return largest > EPSILON * EPSILON ? Math.min(1, largest / 2) : 1;
+}
+function screenConstantScale(camera, object, viewportHeightPx, pxPerUnit = 2) {
+  const worldPoint = object.getWorldPosition(new THREE.Vector3());
+  return getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * pxPerUnit;
+}
 function calculateFieldEdgeHitRadius({
   camera,
   worldPoint,
@@ -2076,7 +2084,7 @@ function calculateFieldEdgeHitRadius({
   const screenRadius = getWorldUnitsPerScreenPixel(camera, worldPoint, viewportHeightPx) * targetHitWidthPx / 2;
   const shortestExtent = getShortestPositiveFieldExtent(minBound, maxBound);
   const fieldRadiusCap = shortestExtent > EPSILON ? shortestExtent * fieldFraction : maxRadius;
-  return clamp(Math.min(screenRadius, fieldRadiusCap), minRadius, maxRadius);
+  return clamp(Math.min(screenRadius, fieldRadiusCap), Math.min(minRadius, fieldRadiusCap), maxRadius);
 }
 
 // src/gizmos/selectionHitTarget.ts
@@ -2438,24 +2446,25 @@ var FieldVisualizer = ({
   const planeGeometry = useMemo(() => {
     const [minX, minY, minZ] = min_bound;
     const [maxX, maxY, maxZ] = max_bound;
+    const nudge = 1e-3 * fieldGizmoUnit(min_bound, max_bound);
     if (dimension === "2D") {
       switch (plane) {
         case "XY":
           return {
-            position: [(minX + maxX) / 2, (minY + maxY) / 2, minZ + 1e-3],
+            position: [(minX + maxX) / 2, (minY + maxY) / 2, minZ + nudge],
             rotation: [0, 0, 0],
             size: [maxX - minX, maxY - minY]
           };
         case "YZ":
           return {
-            position: [minX + 1e-3, (minY + maxY) / 2, (minZ + maxZ) / 2],
+            position: [minX + nudge, (minY + maxY) / 2, (minZ + maxZ) / 2],
             rotation: [0, Math.PI / 2, 0],
             size: [maxZ - minZ, maxY - minY]
           };
         case "XZ":
         default:
           return {
-            position: [(minX + maxX) / 2, minY + 1e-3, (minZ + maxZ) / 2],
+            position: [(minX + maxX) / 2, minY + nudge, (minZ + maxZ) / 2],
             rotation: [-Math.PI / 2, 0, 0],
             size: [maxX - minX, maxZ - minZ]
           };
@@ -2464,7 +2473,7 @@ var FieldVisualizer = ({
       const h = plane_position;
       switch (plane_axis) {
         case "XY": {
-          const zPos = minZ + h * (maxZ - minZ) + 1e-3;
+          const zPos = minZ + h * (maxZ - minZ) + nudge;
           return {
             position: [(minX + maxX) / 2, (minY + maxY) / 2, zPos],
             rotation: [0, 0, 0],
@@ -2472,7 +2481,7 @@ var FieldVisualizer = ({
           };
         }
         case "YZ": {
-          const xPos = minX + h * (maxX - minX) + 1e-3;
+          const xPos = minX + h * (maxX - minX) + nudge;
           return {
             position: [xPos, (minY + maxY) / 2, (minZ + maxZ) / 2],
             rotation: [0, Math.PI / 2, 0],
@@ -2481,7 +2490,7 @@ var FieldVisualizer = ({
         }
         case "XZ":
         default: {
-          const yPos = minY + h * (maxY - minY) + 1e-3;
+          const yPos = minY + h * (maxY - minY) + nudge;
           return {
             position: [(minX + maxX) / 2, yPos, (minZ + maxZ) / 2],
             rotation: [-Math.PI / 2, 0, 0],
@@ -2630,7 +2639,7 @@ var FieldHandle = ({
 }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
   const meshRef = useRef(null);
   const dragStartRef = useRef(null);
   const planeRef = useRef(null);
@@ -2639,11 +2648,7 @@ var FieldHandle = ({
   const baseScreenSize = type === "corner" ? 14 : type === "edge" ? 16 : 18;
   useFrame(() => {
     if (meshRef.current) {
-      const worldPos = new THREE.Vector3();
-      meshRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * baseScreenSize / 500;
-      meshRef.current.scale.setScalar(scale);
+      meshRef.current.scale.setScalar(screenConstantScale(camera, meshRef.current, size.height) * baseScreenSize);
     }
   });
   const currentColor = isDragging ? activeColor : isHovered ? hoverColor : color;
@@ -2824,18 +2829,18 @@ var FieldHandle = ({
     const barThickness = 0.25;
     return /* @__PURE__ */ React.createElement("group", null, bars.map((bar, i) => {
       const pos = [0, 0, 0];
-      const size = [barThickness, barThickness, barThickness];
+      const size2 = [barThickness, barThickness, barThickness];
       if (bar.axis === "x") {
         pos[0] = bar.direction * barLength / 2;
-        size[0] = barLength;
+        size2[0] = barLength;
       } else if (bar.axis === "y") {
         pos[1] = bar.direction * barLength / 2;
-        size[1] = barLength;
+        size2[1] = barLength;
       } else {
         pos[2] = bar.direction * barLength / 2;
-        size[2] = barLength;
+        size2[2] = barLength;
       }
-      return /* @__PURE__ */ React.createElement("mesh", { key: i, position: pos }, /* @__PURE__ */ React.createElement("boxGeometry", { args: size }), /* @__PURE__ */ React.createElement(
+      return /* @__PURE__ */ React.createElement("mesh", { key: i, position: pos }, /* @__PURE__ */ React.createElement("boxGeometry", { args: size2 }), /* @__PURE__ */ React.createElement(
         "meshBasicMaterial",
         {
           color: currentColor,
@@ -2850,16 +2855,16 @@ var FieldHandle = ({
   const renderEdgeGeometry = () => {
     const barLength = 1.2;
     const barThickness = 0.3;
-    let size;
+    let size2;
     const dir = edgeDirection || (axis === "x" ? "y" : axis === "y" ? "x" : "x");
     if (dir === "x") {
-      size = [barLength, barThickness, barThickness];
+      size2 = [barLength, barThickness, barThickness];
     } else if (dir === "y") {
-      size = [barThickness, barLength, barThickness];
+      size2 = [barThickness, barLength, barThickness];
     } else {
-      size = [barThickness, barThickness, barLength];
+      size2 = [barThickness, barThickness, barLength];
     }
-    return /* @__PURE__ */ React.createElement("boxGeometry", { args: size });
+    return /* @__PURE__ */ React.createElement("boxGeometry", { args: size2 });
   };
   const renderFaceGeometry = () => {
     const barLength = 0.8;
@@ -2950,6 +2955,7 @@ var FieldHandle = ({
 var FieldHandle_default = FieldHandle;
 
 // src/gizmos/FieldHeightSlider.tsx
+var LABEL_PX = 12;
 var FieldHeightSlider = ({
   minBound,
   maxBound,
@@ -2964,11 +2970,12 @@ var FieldHeightSlider = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [dragHeight, setDragHeight] = useState(height);
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
   const groupRef = useRef(null);
   const handleRef = useRef(null);
   const startCapRef = useRef(null);
   const endCapRef = useRef(null);
+  const labelRef = useRef(null);
   const dragStartRef = useRef(null);
   const planeRef = useRef(null);
   const parentWorldPosRef = useRef(new THREE.Vector3());
@@ -2982,8 +2989,9 @@ var FieldHeightSlider = ({
   const [maxX, maxY, maxZ] = maxBound;
   const baseScreenSize = 16;
   const currentHeight = isDragging ? dragHeight : height;
+  const unit = fieldGizmoUnit(minBound, maxBound);
   const sliderConfig = useMemo(() => {
-    const offset = 1;
+    const offset = 1 * unit;
     switch (plane) {
       case "XY": {
         const sliderStart = [maxX + offset, (minY + maxY) / 2, minZ];
@@ -3026,28 +3034,16 @@ var FieldHeightSlider = ({
         return { sliderStart, sliderEnd, handlePos, axis: "y", axisLength, axisMin: minY, axisDir, startPoint };
       }
     }
-  }, [plane, minX, minY, minZ, maxX, maxY, maxZ, currentHeight, isDragging]);
+  }, [plane, minX, minY, minZ, maxX, maxY, maxZ, currentHeight, isDragging, unit]);
   useFrame(() => {
     if (handleRef.current) {
-      const worldPos = new THREE.Vector3();
-      handleRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * baseScreenSize / 500;
-      handleRef.current.scale.setScalar(scale);
+      handleRef.current.scale.setScalar(screenConstantScale(camera, handleRef.current, size.height) * baseScreenSize);
     }
-    if (startCapRef.current) {
-      const worldPos = new THREE.Vector3();
-      startCapRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * 2.5 / 500;
-      startCapRef.current.scale.setScalar(scale);
+    for (const cap of [startCapRef.current, endCapRef.current]) {
+      if (cap) cap.scale.setScalar(screenConstantScale(camera, cap, size.height) * 2.5);
     }
-    if (endCapRef.current) {
-      const worldPos = new THREE.Vector3();
-      endCapRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * 2.5 / 500;
-      endCapRef.current.scale.setScalar(scale);
+    if (labelRef.current) {
+      labelRef.current.scale.setScalar(screenConstantScale(camera, labelRef.current, size.height, LABEL_PX));
     }
   });
   const currentColor = isDragging ? activeColor : isHovered ? "#555555" : color;
@@ -3155,17 +3151,17 @@ var FieldHeightSlider = ({
     const pos = [...sliderConfig.handlePos];
     switch (sliderConfig.axis) {
       case "x":
-        pos[2] += 0.5;
+        pos[2] += 0.5 * unit;
         break;
       case "y":
-        pos[0] += 0.5;
+        pos[0] += 0.5 * unit;
         break;
       case "z":
-        pos[0] += 0.5;
+        pos[0] += 0.5 * unit;
         break;
     }
     return pos;
-  }, [sliderConfig]);
+  }, [sliderConfig, unit]);
   return /* @__PURE__ */ React.createElement("group", { ref: groupRef }, /* @__PURE__ */ React.createElement(
     Line,
     {
@@ -3195,17 +3191,16 @@ var FieldHeightSlider = ({
         depthTest: false
       }
     )
-  ), /* @__PURE__ */ React.createElement(
+  ), /* @__PURE__ */ React.createElement("group", { ref: labelRef, position: labelPosition }, /* @__PURE__ */ React.createElement(
     Text,
     {
-      position: labelPosition,
-      fontSize: 0.3,
+      fontSize: 1,
       color: currentColor,
       anchorX: "left",
       anchorY: "middle"
     },
     `${Math.round(currentHeight * 100)}%`
-  ));
+  )));
 };
 var FieldHeightSlider_default = FieldHeightSlider;
 
@@ -3915,7 +3910,7 @@ var useMemo2 = React3.useMemo;
 var useRef2 = React3.useRef;
 var useState2 = React3.useState;
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
 var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 var toCamelCase = (string) => string.replace(
   /^([A-Z])|[\s-_]+(\w)/g,
@@ -3936,7 +3931,7 @@ var hasA11yProp = (props) => {
   }
 };
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
 var defaultAttributes = {
   xmlns: "http://www.w3.org/2000/svg",
   width: 24,
@@ -3949,7 +3944,7 @@ var defaultAttributes = {
   strokeLinejoin: "round"
 };
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/Icon.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/Icon.js
 var Icon = forwardRef(
   ({
     color = "currentColor",
@@ -3980,7 +3975,7 @@ var Icon = forwardRef(
   )
 );
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
 var createLucideIcon = (iconName, iconNode) => {
   const Component = forwardRef(
     ({ className, ...props }, ref) => createElement(Icon, {
@@ -3998,7 +3993,7 @@ var createLucideIcon = (iconName, iconNode) => {
   return Component;
 };
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
 var __iconNode = [
   [
     "path",
@@ -4010,7 +4005,7 @@ var __iconNode = [
 ];
 var Clapperboard = createLucideIcon("clapperboard", __iconNode);
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/film.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/film.js
 var __iconNode2 = [
   ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2", key: "afitv7" }],
   ["path", { d: "M7 3v18", key: "bbkbws" }],
@@ -4023,7 +4018,7 @@ var __iconNode2 = [
 ];
 var Film = createLucideIcon("film", __iconNode2);
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
 var __iconNode3 = [
   [
     "path",
@@ -4038,14 +4033,14 @@ var __iconNode3 = [
 ];
 var ImageDown = createLucideIcon("image-down", __iconNode3);
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/pause.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/pause.js
 var __iconNode4 = [
   ["rect", { x: "14", y: "3", width: "5", height: "18", rx: "1", key: "kaeet6" }],
   ["rect", { x: "5", y: "3", width: "5", height: "18", rx: "1", key: "1wsw3u" }]
 ];
 var Pause = createLucideIcon("pause", __iconNode4);
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/play.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/play.js
 var __iconNode5 = [
   [
     "path",
@@ -4057,7 +4052,7 @@ var __iconNode5 = [
 ];
 var Play = createLucideIcon("play", __iconNode5);
 
-// ../../../witwin-studio/.claude/worktrees/field-viewer/studio/node_modules/lucide-react/dist/esm/icons/video.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/video.js
 var __iconNode6 = [
   [
     "path",

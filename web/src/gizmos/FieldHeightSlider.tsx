@@ -2,6 +2,9 @@ import type ReactTypes from 'react';
 import type * as ThreeTypes from 'three';
 import { React, THREE, useCallback, useMemo, useRef, useState, useThree, useFrame, Line, Text } from '../runtime';
 import type { ThreeEvent } from '../runtime';
+import { fieldGizmoUnit, screenConstantScale } from './fieldHitTarget';
+
+const LABEL_PX = 12;
 
 interface FieldHeightSliderProps {
   // Bounding box
@@ -33,12 +36,13 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
   const [isDragging, setIsDragging] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const [dragHeight, setDragHeight] = useState(height); // Local height during drag
-  const { camera, gl } = useThree();
+  const { camera, gl, size } = useThree();
 
   const groupRef = useRef<ThreeTypes.Group>(null);
   const handleRef = useRef<ThreeTypes.Mesh>(null);
   const startCapRef = useRef<ThreeTypes.Mesh>(null);
   const endCapRef = useRef<ThreeTypes.Mesh>(null);
+  const labelRef = useRef<ThreeTypes.Group>(null);
   const dragStartRef = useRef<{ height: number; worldY: number } | null>(null);
   const planeRef = useRef<ThreeTypes.Plane | null>(null);
   // Store parent world position at drag start for consistent coordinate transformation
@@ -62,9 +66,12 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
   // Use local drag height during drag for immediate feedback
   const currentHeight = isDragging ? dragHeight : height;
 
+  // Offsets are in field units (see fieldGizmoUnit).
+  const unit = fieldGizmoUnit(minBound, maxBound);
+
   // Calculate slider position and dimensions based on plane
   const sliderConfig = useMemo(() => {
-    const offset = 1.0; // Distance from the bounding box
+    const offset = 1.0 * unit; // Distance from the bounding box
 
     switch (plane) {
       case 'XY': {
@@ -111,33 +118,18 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
         return { sliderStart, sliderEnd, handlePos, axis: 'y' as const, axisLength, axisMin: minY, axisDir, startPoint };
       }
     }
-  }, [plane, minX, minY, minZ, maxX, maxY, maxZ, currentHeight, isDragging]);
+  }, [plane, minX, minY, minZ, maxX, maxY, maxZ, currentHeight, isDragging, unit]);
 
-  // Update handle and end cap scales based on camera distance (matching FieldHandle behavior)
+  // Screen-constant sizes, matching FieldHandle; the caps are smaller than the handle.
   useFrame(() => {
-    // Scale handle
     if (handleRef.current) {
-      const worldPos = new THREE.Vector3();
-      handleRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * baseScreenSize / 500;
-      handleRef.current.scale.setScalar(scale);
+      handleRef.current.scale.setScalar(screenConstantScale(camera, handleRef.current, size.height) * baseScreenSize);
     }
-    // Scale start cap
-    if (startCapRef.current) {
-      const worldPos = new THREE.Vector3();
-      startCapRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * 2.5 / 500; // Smaller than handle
-      startCapRef.current.scale.setScalar(scale);
+    for (const cap of [startCapRef.current, endCapRef.current]) {
+      if (cap) cap.scale.setScalar(screenConstantScale(camera, cap, size.height) * 2.5);
     }
-    // Scale end cap
-    if (endCapRef.current) {
-      const worldPos = new THREE.Vector3();
-      endCapRef.current.getWorldPosition(worldPos);
-      const distance = camera.position.distanceTo(worldPos);
-      const scale = distance * 2.5 / 500; // Smaller than handle
-      endCapRef.current.scale.setScalar(scale);
+    if (labelRef.current) {
+      labelRef.current.scale.setScalar(screenConstantScale(camera, labelRef.current, size.height, LABEL_PX));
     }
   });
 
@@ -288,17 +280,17 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
     // Offset label to the side
     switch (sliderConfig.axis) {
       case 'x':
-        pos[2] += 0.5;
+        pos[2] += 0.5 * unit;
         break;
       case 'y':
-        pos[0] += 0.5;
+        pos[0] += 0.5 * unit;
         break;
       case 'z':
-        pos[0] += 0.5;
+        pos[0] += 0.5 * unit;
         break;
     }
     return pos;
-  }, [sliderConfig]);
+  }, [sliderConfig, unit]);
 
   return (
     <group ref={groupRef}>
@@ -345,16 +337,17 @@ const FieldHeightSlider: ReactTypes.FC<FieldHeightSliderProps> = ({
         />
       </mesh>
 
-      {/* Height percentage label */}
-      <Text
-        position={labelPosition}
-        fontSize={0.3}
-        color={currentColor}
-        anchorX="left"
-        anchorY="middle"
-      >
-        {`${Math.round(currentHeight * 100)}%`}
-      </Text>
+      {/* Height percentage label, LABEL_PX tall on screen like the handles */}
+      <group ref={labelRef} position={labelPosition}>
+        <Text
+          fontSize={1}
+          color={currentColor}
+          anchorX="left"
+          anchorY="middle"
+        >
+          {`${Math.round(currentHeight * 100)}%`}
+        </Text>
+      </group>
     </group>
   );
 };

@@ -8,7 +8,7 @@ import { createColormapTexture } from '../shaders/volumeShaders';
 import { planeSliceVertexShader, planeSliceFragmentShader } from '../shaders/planeSliceShaders';
 import { fieldLegendSpec, useFieldLegend } from '../field/fieldLegend';
 import { usePhaseClock } from '../slice/phaseClock';
-import { calculateFieldEdgeHitRadius } from './fieldHitTarget';
+import { calculateFieldEdgeHitRadius, fieldGizmoUnit } from './fieldHitTarget';
 import { SOFT_SELECTION_HIT_AREA_FLAG } from './selectionHitTarget';
 import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
 
@@ -490,26 +490,28 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
   const planeGeometry = useMemo(() => {
     const [minX, minY, minZ] = min_bound;
     const [maxX, maxY, maxZ] = max_bound;
+    // Lifts the slice off a box face it lies on; 1 mm on a 2 m field.
+    const nudge = 0.001 * fieldGizmoUnit(min_bound, max_bound);
 
     if (dimension === '2D') {
       // 2D mode - place on the selected plane (fixed position)
       switch (plane) {
         case 'XY':
           return {
-            position: [(minX + maxX) / 2, (minY + maxY) / 2, minZ + 0.001] as [number, number, number],
+            position: [(minX + maxX) / 2, (minY + maxY) / 2, minZ + nudge] as [number, number, number],
             rotation: [0, 0, 0] as [number, number, number],
             size: [maxX - minX, maxY - minY] as [number, number]
           };
         case 'YZ':
           return {
-            position: [minX + 0.001, (minY + maxY) / 2, (minZ + maxZ) / 2] as [number, number, number],
+            position: [minX + nudge, (minY + maxY) / 2, (minZ + maxZ) / 2] as [number, number, number],
             rotation: [0, Math.PI / 2, 0] as [number, number, number],
             size: [maxZ - minZ, maxY - minY] as [number, number]
           };
         case 'XZ':
         default:
           return {
-            position: [(minX + maxX) / 2, minY + 0.001, (minZ + maxZ) / 2] as [number, number, number],
+            position: [(minX + maxX) / 2, minY + nudge, (minZ + maxZ) / 2] as [number, number, number],
             rotation: [-Math.PI / 2, 0, 0] as [number, number, number],
             size: [maxX - minX, maxZ - minZ] as [number, number]
           };
@@ -520,7 +522,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
 
       switch (plane_axis) {
         case 'XY': {
-          const zPos = minZ + h * (maxZ - minZ) + 0.001;
+          const zPos = minZ + h * (maxZ - minZ) + nudge;
           return {
             position: [(minX + maxX) / 2, (minY + maxY) / 2, zPos] as [number, number, number],
             rotation: [0, 0, 0] as [number, number, number],
@@ -528,7 +530,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
           };
         }
         case 'YZ': {
-          const xPos = minX + h * (maxX - minX) + 0.001;
+          const xPos = minX + h * (maxX - minX) + nudge;
           return {
             position: [xPos, (minY + maxY) / 2, (minZ + maxZ) / 2] as [number, number, number],
             rotation: [0, Math.PI / 2, 0] as [number, number, number],
@@ -537,7 +539,7 @@ const FieldVisualizer: ReactTypes.FC<FieldVisualizerProps> = ({
         }
         case 'XZ':
         default: {
-          const yPos = minY + h * (maxY - minY) + 0.001;
+          const yPos = minY + h * (maxY - minY) + nudge;
           return {
             position: [(minX + maxX) / 2, yPos, (minZ + maxZ) / 2] as [number, number, number],
             rotation: [-Math.PI / 2, 0, 0] as [number, number, number],
