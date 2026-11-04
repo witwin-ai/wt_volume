@@ -1,6 +1,6 @@
 import type ReactTypes from 'react';
 import { React } from './runtime';
-import type { HostSceneObject, ViewportHost } from './sdk/types';
+import type { HostSceneObject, TransformToolName, ViewportHost } from './sdk/types';
 import VolumeVisualizer, { volumeVisualizerConfig } from './gizmos/VolumeVisualizer';
 import SDFVisualizer, { sdfVisualizerConfig } from './gizmos/SDFVisualizer';
 import FieldVisualizer, { fieldVisualizerConfig } from './gizmos/FieldVisualizer';
@@ -29,11 +29,13 @@ function fieldData(component: any, object: HostSceneObject): any {
 function FieldBoundsGizmoObject({
   object,
   selected,
+  tool,
   host,
 }: {
   object: HostSceneObject;
   selected: boolean;
   hovered: boolean;
+  tool?: TransformToolName;
   host: ViewportHost;
 }) {
   if (!selected) return null;
@@ -42,8 +44,9 @@ function FieldBoundsGizmoObject({
   return (
     <FieldGizmo
       objectId={object.id}
-      fieldData={fieldData(component, object)}
+      fieldData={{ ...fieldData(component, object), cell_size: getComponentValue<number | undefined>(component, 'cell_size', undefined) }}
       isLocked={!!(object as any).locked}
+      tool={tool}
       getObject={(objectId) => host.scene.getObjects()[objectId]}
       interaction={host.interaction}
       sceneWrites={host.sceneWrites}

@@ -28,10 +28,14 @@ export interface VisualizerConfig {
   skipStandardGeometry?: boolean;
 }
 
+/** Viewport tool (Q/W/E/R/T); Studio hosts from the Bounds tool on pass it to gizmos. */
+export type TransformToolName = 'select' | 'translate' | 'rotate' | 'scale' | 'bounds';
+
 export interface GizmoProvider {
   id: string;
   match: (object: HostSceneObject) => boolean;
-  component: ComponentType<{ object: HostSceneObject; selected: boolean; hovered: boolean }>;
+  /** `tool` is the active viewport tool while the object is selected; older hosts omit it. */
+  component: ComponentType<{ object: HostSceneObject; selected: boolean; hovered: boolean; tool?: TransformToolName }>;
   priority?: number;
 }
 
