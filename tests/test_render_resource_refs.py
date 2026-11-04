@@ -12,7 +12,6 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "server"))
 sys.path.insert(0, str(ROOT / "plugins"))
 
-import witwin_server.api as studio_api
 from wt_volume.components.sdf import SDFRendererComponent
 from wt_volume.components.volume import VolumeRendererComponent
 from witwin_server.api import Scene, SceneObject
@@ -95,8 +94,9 @@ def test_binary_asset_service_registers_bytes_and_returns_ref() -> None:
     assert service.get_bytes(ref.asset_id) == b"PCLD-data"
 
 
-def test_renderer_components_are_plugin_owned_while_field_stays_core() -> None:
-    assert studio_api.FieldComponent
+def test_renderer_components_are_plugin_owned_while_field_is_studio_em() -> None:
+    em_api = importlib.import_module("witwin_server.plugins_builtin.em.api")
+    assert em_api.FieldComponent
     api = importlib.import_module("wt_volume.api")
     assert api.VolumeRendererComponent is VolumeRendererComponent
     assert api.SDFRendererComponent is SDFRendererComponent
