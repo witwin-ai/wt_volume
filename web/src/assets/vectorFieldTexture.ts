@@ -2,7 +2,7 @@
  * Vector field data loading and sampling utilities
  */
 
-import type { ViewportAssetsApi } from '../sdk/types';
+import type { ViewportAssetsApi } from '@witwin/host';
 
 export interface VectorFieldLoadResult {
   rawData: Float32Array;  // RGBA data (Vx, Vy, Vz, magnitude)

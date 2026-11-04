@@ -1,5 +1,5 @@
 import { THREE } from '../runtime';
-import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
+import type { RenderResourceRef, ViewportAssetsApi } from '@witwin/host';
 
 export interface VolumeLoadResult {
   texture: any;

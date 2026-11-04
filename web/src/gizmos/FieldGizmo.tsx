@@ -3,7 +3,9 @@ import type * as ThreeTypes from 'three';
 import { React, THREE, Line, useCallback, useMemo, useRef, useState } from '../runtime';
 import FieldHandle, { HandleType, AxisConstraint } from './FieldHandle';
 import FieldHeightSlider from './FieldHeightSlider';
-import type { HostSceneObject, ViewportInteractionApi, ViewportSceneWriteApi } from '../sdk/types';
+import type { HostSceneObject, SceneService, ViewportInteractionApi } from '@witwin/host';
+
+type SceneWrites = Pick<SceneService, 'updateComponentField' | 'updateObjectTransform'>;
 import { VOLUME_DEPTH_SKIP_FLAG } from './VolumeDepthPrepass';
 
 interface FieldComponentData {
@@ -37,7 +39,7 @@ interface FieldGizmoProps {
   isLocked?: boolean;
   getObject?: (objectId: string) => HostSceneObject | undefined;
   interaction?: ViewportInteractionApi;
-  sceneWrites?: ViewportSceneWriteApi;
+  sceneWrites?: SceneWrites;
 }
 
 const noopInteraction: ViewportInteractionApi = {
@@ -45,7 +47,7 @@ const noopInteraction: ViewportInteractionApi = {
   isGizmoDragging: () => false,
 };
 
-const noopSceneWrites: ViewportSceneWriteApi = {
+const noopSceneWrites: SceneWrites = {
   updateComponentField: async () => undefined,
   updateObjectTransform: async () => undefined,
 };

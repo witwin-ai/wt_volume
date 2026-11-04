@@ -10,7 +10,7 @@ import { fieldLegendSpec, useFieldLegend } from '../field/fieldLegend';
 import { usePhaseClock } from '../slice/phaseClock';
 import { calculateFieldEdgeHitRadius, fieldGizmoUnit, parentWorldScale } from './fieldHitTarget';
 import { SOFT_SELECTION_HIT_AREA_FLAG } from './selectionHitTarget';
-import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
+import type { RenderResourceRef, ViewportAssetsApi } from '@witwin/host';
 
 // Default field color and opacity
 const DEFAULT_FIELD_COLOR = '#333333';

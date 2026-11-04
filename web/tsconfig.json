@@ -9,6 +9,7 @@
     "esModuleInterop": true,
     "baseUrl": ".",
     "paths": {
+      "@witwin/host": ["../../../witwin-studio/studio/packages/witwin-host/src/index.ts"],
       "react": ["../../../witwin-studio/studio/node_modules/@types/react"],
       "three": ["../../../witwin-studio/studio/node_modules/@types/three"],
       "@react-three/fiber": ["../../../witwin-studio/studio/node_modules/@react-three/fiber/dist/declarations/src/index"],

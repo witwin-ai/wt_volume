@@ -10,7 +10,7 @@ import {
 import { VisualizerConfig, VisualizerProps } from './types';
 import { getComponentValue } from './utils';
 import { VOLUME_DEPTH_SKIP_FLAG } from './VolumeDepthPrepass';
-import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
+import type { RenderResourceRef, ViewportAssetsApi } from '@witwin/host';
 
 // 2D Loading spinner component
 const LoadingSpinner: ReactTypes.FC = () => (

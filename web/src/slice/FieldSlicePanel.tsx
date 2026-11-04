@@ -1,7 +1,7 @@
 import type ReactTypes from 'react';
 import { Clapperboard, Film, ImageDown, Pause, Play, Video } from 'lucide-react';
 import { React, useEffect, useMemo, useRef, useState } from '../runtime';
-import type { HostSceneObject, VolumeTextureResource, ViewportHost } from '../sdk/types';
+import type { FrontendHost, HostSceneObject, VolumeTextureResource } from '@witwin/host';
 import { fieldVisualizerConfig } from '../gizmos/FieldVisualizer';
 import { fieldLegendSpec } from '../field/fieldLegend';
 import { encodeGif } from '../media/gif';
@@ -40,23 +40,27 @@ function fieldOf(object: HostSceneObject | undefined): FieldData | null {
   return data?.volume ? data : null;
 }
 
-function pickField(host: ViewportHost, previous: string | null): string | null {
-  const objects = host.scene.getObjects();
-  const selected = host.scene.getSelection().find((id) => fieldOf(objects[id]));
+function pickField(host: FrontendHost, previous: string | null): string | null {
+  const scene = host.services.get('scene');
+  const objects = scene.getObjects();
+  const selected = scene.getSelection().find((id) => fieldOf(objects[id]));
   if (selected) return selected;
   if (previous && fieldOf(objects[previous])) return previous;
   return Object.keys(objects).find((id) => fieldOf(objects[id])) ?? null;
 }
 
 /** Re-renders on every scene or selection change. */
-function useSceneVersion(host: ViewportHost): number {
+function useSceneVersion(host: FrontendHost): number {
   const [version, setVersion] = useState(0);
-  useEffect(() => host.scene.subscribe(() => setVersion((v) => v + 1)), [host]);
+  useEffect(() => {
+    const subscription = host.services.get('scene').subscribe(() => setVersion((v) => v + 1));
+    return () => subscription.dispose();
+  }, [host]);
   return version;
 }
 
 /** The field's re and im volumes on the CPU, reloaded when the published resources change. */
-function useFieldGrid(host: ViewportHost, data: FieldData | null): { grid: FieldGrid | null; error: string | null } {
+function useFieldGrid(host: FrontendHost, data: FieldData | null): { grid: FieldGrid | null; error: string | null } {
   const [state, setState] = useState<{ grid: FieldGrid | null; error: string | null }>({ grid: null, error: null });
   const re = data?.volume ?? null;
   const im = data?.volume_im ?? null;
@@ -130,7 +134,7 @@ const styles: Record<string, ReactTypes.CSSProperties> = {
   empty: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-secondary)' },
 };
 
-export function createFieldSlicePanel(host: ViewportHost): ReactTypes.FC<{ panelId: string }> {
+export function createFieldSlicePanel(host: FrontendHost): ReactTypes.FC<{ panelId: string }> {
   const HostButton = host.ui?.Button;
 
   function ToolButton({ label, icon, onClick, disabled, active }: { label: string; icon: ReactTypes.ReactNode; onClick: () => void; disabled?: boolean; active?: boolean }) {
@@ -159,7 +163,7 @@ export function createFieldSlicePanel(host: ViewportHost): ReactTypes.FC<{ panel
       return shownRef.current;
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [version]);
-    const object = objectId ? host.scene.getObjects()[objectId] : undefined;
+    const object = objectId ? host.services.get('scene').getObjects()[objectId] : undefined;
     const data = fieldOf(object);
     const { grid, error } = useFieldGrid(host, data);
 
@@ -222,7 +226,7 @@ export function createFieldSlicePanel(host: ViewportHost): ReactTypes.FC<{ panel
 
     const writePhase = (value: number) => {
       if (!objectId || !data?.componentName) return;
-      void host.sceneWrites.updateComponentField(objectId, data.componentName, 'field_phase', value);
+      void host.services.get('scene').updateComponentField(objectId, data.componentName, 'field_phase', value);
     };
 
     const togglePlay = () => {

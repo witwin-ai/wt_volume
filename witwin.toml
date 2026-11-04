@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Viewport renderers for volume, SDF, and field data."
 enabled = true
 repository = "https://github.com/witwin-ai/wt_volume"
+# The web half adds visualizers, passes and the Field Slice panel to the viewport.
+pluginDependencies = [{ id = "studio.viewport", optional = true }]
 
 [engines]
 witwin = "^1.0.0"
@@ -13,7 +15,7 @@ root = "web"
 
 [contributes.viewport.host]
 entry = "viewport.js"
-sdkVersion = "1.0.0"
+sdkVersion = "2.0.0"
 
 [permissions]
 frontend = true

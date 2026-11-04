@@ -21,7 +21,7 @@ test('declares the volume viewport host and shader permission', () => {
 
   assert.match(manifest, /id = "witwin\.volume"/);
   assert.match(manifest, /entry = "viewport\.js"/);
-  assert.match(manifest, /sdkVersion = "1\.0\.0"/);
+  assert.match(manifest, /sdkVersion = "2\.0\.0"/);
   assert.doesNotMatch(manifest, /builtin = "volumeDepth"/);
   assert.match(manifest, /frontend = true/);
   assert.match(manifest, /shader = true/);
@@ -30,8 +30,10 @@ test('declares the volume viewport host and shader permission', () => {
 test('keeps volume activation inside the plugin bundle', () => {
   const viewportBundle = readPluginFile('web/viewport.js');
 
-  assert.match(viewportBundle, /function activate/);
-  assert.match(viewportBundle, /export/);
+  assert.match(viewportBundle, /sdkVersion = "2\.0\.0"/);
+  assert.match(viewportBundle, /id: "witwin\.volume"/);
+  assert.match(viewportBundle, /as default/);
+  assert.doesNotMatch(viewportBundle, /export function activate|host\.sceneWrites|host\.scene\./);
   assert.match(viewportBundle, /activateRenderingViewport/);
   assert.match(viewportBundle, /witwin\.volume\.depth/);
   assert.doesNotMatch(viewportBundle, /react\/jsx-runtime/);

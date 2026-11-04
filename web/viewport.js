@@ -3901,7 +3901,7 @@ var useMemo2 = React3.useMemo;
 var useRef2 = React3.useRef;
 var useState2 = React3.useState;
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
 var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 var toCamelCase = (string) => string.replace(
   /^([A-Z])|[\s-_]+(\w)/g,
@@ -3922,7 +3922,7 @@ var hasA11yProp = (props) => {
   }
 };
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
 var defaultAttributes = {
   xmlns: "http://www.w3.org/2000/svg",
   width: 24,
@@ -3935,7 +3935,7 @@ var defaultAttributes = {
   strokeLinejoin: "round"
 };
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/Icon.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/Icon.js
 var Icon = forwardRef(
   ({
     color = "currentColor",
@@ -3966,7 +3966,7 @@ var Icon = forwardRef(
   )
 );
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
 var createLucideIcon = (iconName, iconNode) => {
   const Component = forwardRef(
     ({ className, ...props }, ref) => createElement(Icon, {
@@ -3984,7 +3984,7 @@ var createLucideIcon = (iconName, iconNode) => {
   return Component;
 };
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
 var __iconNode = [
   [
     "path",
@@ -3996,7 +3996,7 @@ var __iconNode = [
 ];
 var Clapperboard = createLucideIcon("clapperboard", __iconNode);
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/film.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/film.js
 var __iconNode2 = [
   ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2", key: "afitv7" }],
   ["path", { d: "M7 3v18", key: "bbkbws" }],
@@ -4009,7 +4009,7 @@ var __iconNode2 = [
 ];
 var Film = createLucideIcon("film", __iconNode2);
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
 var __iconNode3 = [
   [
     "path",
@@ -4024,14 +4024,14 @@ var __iconNode3 = [
 ];
 var ImageDown = createLucideIcon("image-down", __iconNode3);
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/pause.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/pause.js
 var __iconNode4 = [
   ["rect", { x: "14", y: "3", width: "5", height: "18", rx: "1", key: "kaeet6" }],
   ["rect", { x: "5", y: "3", width: "5", height: "18", rx: "1", key: "1wsw3u" }]
 ];
 var Pause = createLucideIcon("pause", __iconNode4);
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/play.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/play.js
 var __iconNode5 = [
   [
     "path",
@@ -4043,7 +4043,7 @@ var __iconNode5 = [
 ];
 var Play = createLucideIcon("play", __iconNode5);
 
-// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/video.js
+// ../../../../witwin-studio/.claude/worktrees/plugin-web-halves-4ac9a2/studio/node_modules/lucide-react/dist/esm/icons/video.js
 var __iconNode6 = [
   [
     "path",
@@ -4866,15 +4866,19 @@ function fieldOf(object) {
   return data?.volume ? data : null;
 }
 function pickField(host, previous) {
-  const objects = host.scene.getObjects();
-  const selected = host.scene.getSelection().find((id) => fieldOf(objects[id]));
+  const scene = host.services.get("scene");
+  const objects = scene.getObjects();
+  const selected = scene.getSelection().find((id) => fieldOf(objects[id]));
   if (selected) return selected;
   if (previous && fieldOf(objects[previous])) return previous;
   return Object.keys(objects).find((id) => fieldOf(objects[id])) ?? null;
 }
 function useSceneVersion(host) {
   const [version, setVersion] = useState(0);
-  useEffect(() => host.scene.subscribe(() => setVersion((v) => v + 1)), [host]);
+  useEffect(() => {
+    const subscription = host.services.get("scene").subscribe(() => setVersion((v) => v + 1));
+    return () => subscription.dispose();
+  }, [host]);
   return version;
 }
 function useFieldGrid(host, data) {
@@ -4954,7 +4958,7 @@ function createFieldSlicePanel(host) {
       shownRef.current = pickField(host, shownRef.current);
       return shownRef.current;
     }, [version]);
-    const object = objectId ? host.scene.getObjects()[objectId] : void 0;
+    const object = objectId ? host.services.get("scene").getObjects()[objectId] : void 0;
     const data = fieldOf(object);
     const { grid, error } = useFieldGrid(host, data);
     const plane = data?.dimension === "2D" ? data.plane : data?.plane_axis;
@@ -5002,7 +5006,7 @@ function createFieldSlicePanel(host) {
     useEffect(() => () => void (phaseClock.get().playing && phaseClock.pause()), []);
     const writePhase = (value) => {
       if (!objectId || !data?.componentName) return;
-      void host.sceneWrites.updateComponentField(objectId, data.componentName, "field_phase", value);
+      void host.services.get("scene").updateComponentField(objectId, data.componentName, "field_phase", value);
     };
     const togglePlay = () => {
       if (clock.playing) writePhase(phaseClock.pause());
@@ -5098,9 +5102,9 @@ function FieldBoundsGizmoObject({
       objectId: object.id,
       fieldData: fieldData(component, object),
       isLocked: !!object.locked,
-      getObject: (objectId) => host.scene.getObjects()[objectId],
+      getObject: (objectId) => host.services.get("scene").getObjects()[objectId],
       interaction: host.interaction,
-      sceneWrites: host.sceneWrites
+      sceneWrites: host.services.get("scene")
     }
   );
 }
@@ -5225,11 +5229,16 @@ function activateRenderingViewport(host) {
 }
 
 // src/viewport.ts
-var sdkVersion = "1.0.0";
-function activate(host) {
-  activateRenderingViewport(host);
-}
+var sdkVersion = "2.0.0";
+var plugin = {
+  id: "witwin.volume",
+  inject: ["scene"],
+  activate(host) {
+    activateRenderingViewport(host);
+  }
+};
+var viewport_default = plugin;
 export {
-  activate,
+  viewport_default as default,
   sdkVersion
 };

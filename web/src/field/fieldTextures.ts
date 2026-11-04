@@ -1,6 +1,6 @@
 import type * as ThreeTypes from 'three';
 import { THREE, useEffect, useState } from '../runtime';
-import type { RenderResourceRef, ViewportAssetsApi } from '../sdk/types';
+import type { RenderResourceRef, ViewportAssetsApi } from '@witwin/host';
 import { checkVolumeSupport, loadVolumeTexture } from '../assets/volumeTexture';
 
 /**

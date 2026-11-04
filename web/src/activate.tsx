@@ -1,6 +1,6 @@
 import type ReactTypes from 'react';
 import { React } from './runtime';
-import type { HostSceneObject, ViewportHost } from './sdk/types';
+import type { FrontendHost, HostSceneObject } from '@witwin/host';
 import VolumeVisualizer, { volumeVisualizerConfig } from './gizmos/VolumeVisualizer';
 import SDFVisualizer, { sdfVisualizerConfig } from './gizmos/SDFVisualizer';
 import FieldVisualizer, { fieldVisualizerConfig } from './gizmos/FieldVisualizer';
@@ -34,7 +34,7 @@ function FieldBoundsGizmoObject({
   object: HostSceneObject;
   selected: boolean;
   hovered: boolean;
-  host: ViewportHost;
+  host: FrontendHost;
 }) {
   if (!selected) return null;
   const component = findComponent(object, (c) => c?.name === 'Field' || c?.base_classes?.includes?.('Field'));
@@ -44,14 +44,14 @@ function FieldBoundsGizmoObject({
       objectId={object.id}
       fieldData={fieldData(component, object)}
       isLocked={!!(object as any).locked}
-      getObject={(objectId) => host.scene.getObjects()[objectId]}
+      getObject={(objectId) => host.services.get('scene').getObjects()[objectId]}
       interaction={host.interaction}
-      sceneWrites={host.sceneWrites}
+      sceneWrites={host.services.get('scene')}
     />
   );
 }
 
-function createFieldRenderingObject(host: ViewportHost): ReactTypes.FC<{
+function createFieldRenderingObject(host: FrontendHost): ReactTypes.FC<{
   object: HostSceneObject;
   selected: boolean;
   hovered: boolean;
@@ -123,7 +123,7 @@ function createFieldRenderingObject(host: ViewportHost): ReactTypes.FC<{
   };
 }
 
-export function activateRenderingViewport(host: ViewportHost): void {
+export function activateRenderingViewport(host: FrontendHost): void {
   host.registerPass({
     id: 'witwin.volume.depth',
     priority: -100,

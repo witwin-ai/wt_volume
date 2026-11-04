@@ -1,5 +1,5 @@
 import type React from 'react';
-import type { HostSceneObject } from '../sdk/types';
+import type { HostSceneObject } from '@witwin/host';
 
 export interface VisualizerProps<T = unknown> {
   data: T;

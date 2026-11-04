@@ -16,7 +16,7 @@ import { loadVectorFieldData, sampleVectorField, VectorFieldSampleData } from '.
 import { getColormapFunc } from '../shaders/volumeShaders';
 import { VisualizerConfig, VisualizerProps } from './types';
 import { getComponentValue } from './utils';
-import type { ViewportAssetsApi } from '../sdk/types';
+import type { ViewportAssetsApi } from '@witwin/host';
 
 // Default field color and opacity (same as FieldVisualizer)
 const DEFAULT_FIELD_COLOR = '#333333';
