@@ -9,7 +9,7 @@ repository = "https://github.com/witwin-ai/wt_volume"
 pluginDependencies = [{ id = "studio.viewport", optional = true }, { id = "studio.em" }]
 
 [engines]
-witwin = "^1.0.0"
+witwin = "^2.0.0"
 
 [web]
 root = "web"
