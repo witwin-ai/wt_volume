@@ -1,37 +1,27 @@
 from __future__ import annotations
 
-import asyncio
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "server"))
 sys.path.insert(0, str(ROOT / "plugins"))
 
+import witwin_server.api as studio_api
 from wt_volume.components.sdf import SDFRendererComponent
 from wt_volume.components.volume import VolumeRendererComponent
-from witwin_server.core import Scene, SceneObject
-from witwin_server.features.components.handlers import ComponentsHandler
-from witwin_server.features.assets.binary.handlers import BinaryAssetHandler
-from witwin_server.features.assets.binary.refs import (
+from witwin_server.api import Scene, SceneObject
+from witwin_server.api import (
     POINT_CLOUD_FORMAT,
     VOLUME_FLOAT32_FORMAT,
     RenderResourceRef,
+    BinaryAssetService,
 )
-from witwin_server.features.assets.binary.service import BinaryAssetService
-from witwin_server.persistence import PersistenceManager
-
-
-class _PersistenceServer:
-    def __init__(self, project_dir: Path) -> None:
-        self.default_scene_dir = project_dir
-        self.verbose = False
 
 
 class _Scene:
@@ -50,14 +40,16 @@ class _Owner:
         self.scene = _Scene(server)
 
 
-def _make_handler(tmp_path: Path) -> BinaryAssetHandler:
-    class _Server:
-        verbose = False
+def _asset_server(tmp_path: Path) -> SimpleNamespace:
+    """A server with only what the components reach: handlers["binary_assets"].service.
 
-        def __init__(self) -> None:
-            self.persistence = PersistenceManager(_PersistenceServer(tmp_path))
-
-    return BinaryAssetHandler(_Server())
+    The persistence stand-in gives the service a runtime volume folder; the
+    real folder layout is Studio's and is tested there.
+    """
+    volumes = tmp_path / ".witwin" / "runtime" / "volumes"
+    persistence = SimpleNamespace(runtime_volumes_dir=volumes, volume_candidate_dirs=lambda: [volumes])
+    service = BinaryAssetService(persistence=persistence)
+    return SimpleNamespace(verbose=False, handlers={"binary_assets": SimpleNamespace(service=service)})
 
 
 def test_render_resource_ref_serializes_camel_case_payload() -> None:
@@ -104,50 +96,17 @@ def test_binary_asset_service_registers_bytes_and_returns_ref() -> None:
 
 
 def test_renderer_components_are_plugin_owned_while_field_stays_core() -> None:
-    assert importlib.import_module("witwin_server.core.components.field_region").FieldComponent
-    assert importlib.import_module("wt_volume.components.volume").VolumeRendererComponent
-    assert importlib.import_module("wt_volume.components.sdf").SDFRendererComponent
+    assert studio_api.FieldComponent
+    api = importlib.import_module("wt_volume.api")
+    assert api.VolumeRendererComponent is VolumeRendererComponent
+    assert api.SDFRendererComponent is SDFRendererComponent
 
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("witwin_server.core.components.volume_renderer")
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("witwin_server.core.components.sdf_renderer")
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("witwin_server.core.components.point_clouds")
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("wt_volume.components.point_cloud")
 
 
-def test_binary_asset_handler_keeps_only_generic_asset_route() -> None:
-    assert BinaryAssetHandler.message_types == []
-    assert BinaryAssetHandler.dispatch_map == {}
-
-
-def test_canonical_asset_route_serves_registered_bytes_and_old_routes_are_gone(tmp_path: Path) -> None:
-    handler = _make_handler(tmp_path)
-    handler.cache_data("volume-abc", b"volume-bytes")
-    app = FastAPI()
-    handler.setup_routes(app)
-    client = TestClient(app)
-
-    response = client.get("/scenes/default/assets/volume-abc")
-    assert response.status_code == 200
-    assert response.content == b"volume-bytes"
-
-    assert client.get("/scenes/default/assets/volumes/volume-abc").status_code == 404
-    assert client.get("/scenes/default/volumes/volume-abc.raw").status_code == 404
-    assert client.get("/scenes/default/pointclouds/volume-abc.bin").status_code == 404
-
-
 def test_volume_export_publishes_resource_ref_not_volume_id(tmp_path: Path) -> None:
-    handler = _make_handler(tmp_path)
-
-    class _Server:
-        verbose = False
-        persistence = handler.server.persistence
-        handlers = {"binary_assets": handler}
-
-    owner = _Owner(_Server())
+    owner = _Owner(_asset_server(tmp_path))
     component = VolumeRendererComponent()
     component._owner = owner
     component.cache_in_memory = True
@@ -193,24 +152,12 @@ def test_volume_resource_ref_round_trips_through_scene_properties() -> None:
     assert loaded.to_dict()["values"]["volume"] == ref
 
 
-def test_generate_buttons_publish_render_resource_refs_through_component_handler(tmp_path: Path) -> None:
-    class _Server:
-        verbose = False
-        main_scene_id = "default"
-
-        def __init__(self) -> None:
-            self.scene = Scene(scene_id=self.main_scene_id, role="main")
-            self.scene._server = self
-            self.persistence = PersistenceManager(_PersistenceServer(tmp_path))
-            self.handlers = {"binary_assets": BinaryAssetHandler(self)}
-
-        def get_scene(self, scene_id: str | None = None):
-            return self.scene
-
-    server = _Server()
+def test_generate_buttons_publish_render_resource_refs(tmp_path: Path) -> None:
+    server = _asset_server(tmp_path)
+    scene = Scene(scene_id="default", role="main")
+    scene._server = server
     events: list[tuple[str, dict]] = []
-    server.scene._emit = lambda event, **kwargs: events.append((event, kwargs))
-    handler = ComponentsHandler(server)
+    scene._emit = lambda event, **kwargs: events.append((event, kwargs))
 
     cases = [
         (VolumeRendererComponent(), "VolumeRenderer", "generate_test_volume", "volume", "volume"),
@@ -220,23 +167,14 @@ def test_generate_buttons_publish_render_resource_refs_through_component_handler
     for component, component_name, button_name, ref_field, kind in cases:
         obj = SceneObject(name=f"{component_name} Object", mesh_type="Empty")
         obj.add_component(component)
-        server.scene.add_object(obj)
+        scene.add_object(obj)
 
-        result = asyncio.run(
-            handler._handle_click_button(
-                {
-                    "object_id": obj.id,
-                    "component_name": component_name,
-                    "button_name": button_name,
-                },
-                websocket=None,
-            )
-        )
+        # The Inspector button runs the decorated method on the component.
+        result = getattr(obj.get_component(component_name), button_name)()
         values = obj.get_component(component_name).to_dict()["values"]
         ref = values[ref_field]
 
-        assert result["type"] == "button_click_result"
-        assert result["success"] is True
+        assert result.startswith("Generated")
         assert ref["kind"] == kind
         assert ref["uri"].startswith("/scenes/default/assets/")
         assert (

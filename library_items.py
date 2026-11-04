@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from witwin_server import Library, SceneObject
+from witwin_server.api import Library, SceneObject
 
 from .components.sdf import SDFRendererComponent
 from .components.volume import VolumeRendererComponent

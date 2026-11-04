@@ -9,7 +9,7 @@ Supports visualization of SDF data with:
 import numpy as np
 import torch
 
-from witwin_server.core.components.core import (
+from witwin_server.api import (
     bool_field,
     button,
     component,
@@ -17,8 +17,8 @@ from witwin_server.core.components.core import (
     int_field,
     string_field,
     vector3_field,
+    ScalarGridResourcePublisher,
 )
-from witwin_server.core.components.scalar_grid_resource import ScalarGridResourcePublisher
 
 
 @component(name="SDFRenderer", category="Rendering/Volume")
