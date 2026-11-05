@@ -1,12 +1,26 @@
 import type ReactTypes from 'react';
 import type * as ThreeTypes from 'three';
-import { React, THREE, Line, useCallback, useMemo, useRef, useState } from '../runtime';
-import FieldHandle, { HandleType, AxisConstraint } from './FieldHandle';
+import { React, THREE, Html, Line, useCallback, useMemo, useRef, useState, useThree, useFrame } from '../runtime';
+import FieldHandle, { type BoundsHandleColors } from './FieldHandle';
 import FieldHeightSlider from './FieldHeightSlider';
-import type { HostSceneObject, SceneService, ViewportInteractionApi } from '@witwin/host';
+import type { HostSceneObject, SceneService, TransformToolName, ViewportInteractionApi } from '@witwin/host';
+import { VOLUME_DEPTH_SKIP_FLAG } from './VolumeDepthPrepass';
+import {
+  PLANE_NORMAL,
+  applyBoundsDrag,
+  buildBoundsHandles,
+  cellCounts,
+  formatLength,
+  pickFacingAxis,
+  type Axis,
+  type Bounds,
+  type BoundsHandleSpec,
+  type DragModifiers,
+  type Side,
+  type Vec3,
+} from './boundsLayout';
 
 type SceneWrites = Pick<SceneService, 'updateComponentField' | 'updateObjectTransform'>;
-import { VOLUME_DEPTH_SKIP_FLAG } from './VolumeDepthPrepass';
 
 interface FieldComponentData {
   componentName?: string;  // The actual component name (Field, FDTDSolver, etc.)
@@ -22,21 +36,12 @@ interface FieldComponentData {
   plane_position?: number;
 }
 
-interface HandleInfo {
-  position: [number, number, number];
-  type: HandleType;
-  axis: AxisConstraint;
-  // Which bounds this handle affects: 'min' or 'max' for each axis
-  affectsMin: [boolean, boolean, boolean];
-  affectsMax: [boolean, boolean, boolean];
-  // For edge handles: the direction the edge runs along
-  edgeDirection?: 'x' | 'y' | 'z';
-}
-
 interface FieldGizmoProps {
   objectId: string;
   fieldData: FieldComponentData;
   isLocked?: boolean;
+  /** Active viewport tool while the object is selected. Resize handles show only under 'bounds'. */
+  tool?: TransformToolName;
   getObject?: (objectId: string) => HostSceneObject | undefined;
   interaction?: ViewportInteractionApi;
   sceneWrites?: SceneWrites;
@@ -71,10 +76,84 @@ function vectorArray(value: unknown, fallback: [number, number, number]): [numbe
   return fallback;
 }
 
+function vec3(value: number[] | undefined, fallback: Vec3): Vec3 {
+  return [Number(value?.[0] ?? fallback[0]), Number(value?.[1] ?? fallback[1]), Number(value?.[2] ?? fallback[2])];
+}
+
+// Handle colours follow the Studio accent so the gizmo matches the rest of the
+// editor; they are never the axis red/green/blue, which would read as axes.
+/* allow-color: 3D gizmo fallbacks when the host theme tokens are not readable */
+const FALLBACK_COLORS: BoundsHandleColors = { accent: '#0066cc', fill: '#ffffff' };
+
+function readHandleColors(): BoundsHandleColors {
+  try {
+    const style = getComputedStyle(document.documentElement);
+    const accent = style.getPropertyValue('--accent').trim();
+    // --accent-text is the accent lifted for dark backgrounds; it reads better
+    // over a dark viewport than the raw accent.
+    const lifted = style.getPropertyValue('--accent-text').trim();
+    const pick = (value: string) => (value && !value.includes('(') ? value : '');
+    return { accent: pick(lifted) || pick(accent) || FALLBACK_COLORS.accent, fill: FALLBACK_COLORS.fill };
+  } catch {
+    return FALLBACK_COLORS;
+  }
+}
+
+/** The 12 edges (3D) or 4 sides (2D) of the box, as segment endpoint pairs. */
+function boxSegments(bounds: Bounds, normal2d: Axis | null): Vec3[] {
+  const { min, max } = bounds;
+  if (normal2d !== null) {
+    const [a, b] = normal2d === 0 ? [1, 2] : normal2d === 1 ? [0, 2] : [0, 1];
+    const at = (va: number, vb: number): Vec3 => {
+      const p: Vec3 = [0, 0, 0];
+      p[a] = va; p[b] = vb; p[normal2d] = min[normal2d];
+      return p;
+    };
+    const c = [at(min[a], min[b]), at(max[a], min[b]), at(max[a], max[b]), at(min[a], max[b])];
+    return [c[0], c[1], c[1], c[2], c[2], c[3], c[3], c[0]];
+  }
+  const c: Vec3[] = [
+    [min[0], min[1], min[2]], [max[0], min[1], min[2]], [max[0], max[1], min[2]], [min[0], max[1], min[2]],
+    [min[0], min[1], max[2]], [max[0], min[1], max[2]], [max[0], max[1], max[2]], [min[0], max[1], max[2]],
+  ];
+  const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
+  return pairs.flatMap(([i, j]) => [c[i], c[j]]);
+}
+
+/** cos 10°: within this of head-on, the depth handles are hidden. */
+const HEAD_ON_COS = Math.cos((10 * Math.PI) / 180);
+
+const labelStyle: ReactTypes.CSSProperties = {
+  transform: 'translate(14px, -50%)',
+  padding: '3px 7px',
+  borderRadius: 4,
+  background: 'var(--tooltip-bg)',
+  color: 'var(--tooltip-text)',
+  boxShadow: 'var(--shadow-md)',
+  font: '11px/1.35 var(--font-mono, monospace)',
+  whiteSpace: 'nowrap',
+  pointerEvents: 'none',
+  userSelect: 'none',
+};
+
+/**
+ * Resize gizmo of a Field's bounds, used by the Bounds tool (T).
+ *
+ * Handles follow a rect tool: corners and sides on the face that looks at the
+ * camera, plus the near and far face centres for depth (see boundsLayout.ts).
+ * They move to another face as the view turns. While dragging, the box and
+ * its size in metres (and cells, when the Field has a cell size) are shown.
+ * Ctrl snaps (to whole cells, else to a round step), Alt resizes about the
+ * centre, Shift keeps a corner's aspect ratio.
+ *
+ * Bounds are relative to the object's origin; on release the box is
+ * re-centred on it and the object moves by the centre offset.
+ */
 const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
   objectId,
   fieldData,
   isLocked = false,
+  tool,
   getObject,
   interaction = noopInteraction,
   sceneWrites = noopSceneWrites,
@@ -83,193 +162,100 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
     componentName = 'Field',  // Default to 'Field' for backward compatibility
     dimension = '3D',
     plane = 'XZ',
-    min_bound = [-5, -5, -5],
-    max_bound = [5, 5, 5],
-    cell_size = 0.5,
+    cell_size,
     render_mode = 'None',
     plane_axis = 'XZ',
     plane_position = 0.0
   } = fieldData;
+  const is2d = dimension === '2D';
+  // Only a Field that declares its cell size gets cell counts and cell snapping;
+  // solvers that derive their grid elsewhere (Maxwell: wavelength / ppw) do not.
+  const cell = typeof cell_size === 'number' && cell_size > 0 ? cell_size : null;
+  const propBounds = useMemo<Bounds>(
+    () => ({ min: vec3(fieldData.min_bound, [-5, -5, -5]), max: vec3(fieldData.max_bound, [5, 5, 5]) }),
+    [fieldData.min_bound, fieldData.max_bound],
+  );
 
-  const [isDragging, setIsDragging] = useState(false);
-  const [localMinBound, setLocalMinBound] = useState<number[]>(min_bound);
-  const [localMaxBound, setLocalMaxBound] = useState<number[]>(max_bound);
+  const { camera } = useThree();
+  const rootRef = useRef<ThreeTypes.Group>(null);
+  const colors = useMemo(readHandleColors, []);
 
-  // Use refs to track current bounds during drag for stable callbacks
-  const localMinRef = useRef<number[]>(min_bound);
-  const localMaxRef = useRef<number[]>(max_bound);
+  // Drag state. The bounds under drag live here until release; refs keep the
+  // drag callbacks stable while they change.
+  const [dragBounds, setDragBounds] = useState<Bounds | null>(null);
+  const [activeHandle, setActiveHandle] = useState<BoundsHandleSpec | null>(null);
+  const dragStartRef = useRef<Bounds | null>(null);
+  const dragBoundsRef = useRef<Bounds | null>(null);
+  const bounds = dragBounds ?? propBounds;
 
-  // Sync local state when props change (from backend updates)
-  React.useEffect(() => {
-    // Only sync when not dragging
-    if (!isDragging) {
-      localMinRef.current = min_bound;
-      localMaxRef.current = max_bound;
-      setLocalMinBound(min_bound);
-      setLocalMaxBound(max_bound);
+  // Face the handles sit on. 2D Fields use their own plane; 3D Fields the
+  // face nearest the camera, re-picked every frame except during a drag.
+  const fixedNormal: Axis | null = is2d ? (PLANE_NORMAL[plane] ?? 1) : null;
+  const [facing, setFacing] = useState<{ normal: Axis; near: Side; headOn: boolean }>({ normal: fixedNormal ?? 1, near: 'max', headOn: false });
+  const facingRef = useRef(facing);
+  const showHandles = !isLocked && tool === 'bounds';
+
+  useFrame(() => {
+    if (!showHandles || fixedNormal !== null || dragStartRef.current || !rootRef.current) return;
+    const local = rootRef.current.worldToLocal(camera.getWorldPosition(new THREE.Vector3()));
+    const toCamera: Vec3 = [0, 1, 2].map((i) =>
+      local.getComponent(i) - (bounds.min[i] + bounds.max[i]) / 2,
+    ) as Vec3;
+    const normal = pickFacingAxis(toCamera, facingRef.current.normal);
+    const near: Side = toCamera[normal] >= 0 ? 'max' : 'min';
+    // Looking (almost) straight down the normal, both depth dots land on the
+    // rect's centre and a drag along the view axis has no usable plane.
+    const length = Math.hypot(...toCamera);
+    const headOn = length > 0 && Math.abs(toCamera[normal]) / length > HEAD_ON_COS;
+    const current = facingRef.current;
+    if (normal !== current.normal || near !== current.near || headOn !== current.headOn) {
+      facingRef.current = { normal, near, headOn };
+      setFacing(facingRef.current);
     }
-  }, [min_bound, max_bound, isDragging]);
+  });
 
-  // Use local state during drag, props otherwise
-  const currentMin = isDragging ? localMinBound : min_bound;
-  const currentMax = isDragging ? localMaxBound : max_bound;
+  const handles = useMemo(
+    () => buildBoundsHandles(
+      bounds,
+      fixedNormal ?? facing.normal,
+      fixedNormal !== null ? 'min' : facing.near,
+      !is2d && !facing.headOn,
+    ),
+    [bounds, fixedNormal, facing, is2d],
+  );
 
-  // Generate handles based on dimension mode
-  const handles = useMemo((): HandleInfo[] => {
-    const [minX, minY, minZ] = currentMin;
-    const [maxX, maxY, maxZ] = currentMax;
-    const midX = (minX + maxX) / 2;
-    const midY = (minY + maxY) / 2;
-    const midZ = (minZ + maxZ) / 2;
-
-    if (dimension === '2D') {
-      // 2D mode: 4 corners + 4 edges on the specified plane
-      // Corners can move in 2 axes (the plane axes)
-      // Edges can only move in 1 axis (perpendicular to the edge, within the plane)
-      switch (plane) {
-        case 'XY':
-          return [
-            // Corners - can move in X and Y
-            { position: [minX, minY, minZ], type: 'corner', axis: 'xy', affectsMin: [true, true, false], affectsMax: [false, false, false] },
-            { position: [maxX, minY, minZ], type: 'corner', axis: 'xy', affectsMin: [false, true, false], affectsMax: [true, false, false] },
-            { position: [maxX, maxY, minZ], type: 'corner', axis: 'xy', affectsMin: [false, false, false], affectsMax: [true, true, false] },
-            { position: [minX, maxY, minZ], type: 'corner', axis: 'xy', affectsMin: [true, false, false], affectsMax: [false, true, false] },
-            // Edges - horizontal edges (along X) can only move in Y, vertical edges (along Y) can only move in X
-            { position: [midX, minY, minZ], type: 'edge', axis: 'y', affectsMin: [false, true, false], affectsMax: [false, false, false], edgeDirection: 'x' },
-            { position: [maxX, midY, minZ], type: 'edge', axis: 'x', affectsMin: [false, false, false], affectsMax: [true, false, false], edgeDirection: 'y' },
-            { position: [midX, maxY, minZ], type: 'edge', axis: 'y', affectsMin: [false, false, false], affectsMax: [false, true, false], edgeDirection: 'x' },
-            { position: [minX, midY, minZ], type: 'edge', axis: 'x', affectsMin: [true, false, false], affectsMax: [false, false, false], edgeDirection: 'y' },
-          ];
-        case 'YZ':
-          return [
-            // Corners - can move in Y and Z
-            { position: [minX, minY, minZ], type: 'corner', axis: 'yz', affectsMin: [false, true, true], affectsMax: [false, false, false] },
-            { position: [minX, maxY, minZ], type: 'corner', axis: 'yz', affectsMin: [false, false, true], affectsMax: [false, true, false] },
-            { position: [minX, maxY, maxZ], type: 'corner', axis: 'yz', affectsMin: [false, false, false], affectsMax: [false, true, true] },
-            { position: [minX, minY, maxZ], type: 'corner', axis: 'yz', affectsMin: [false, true, false], affectsMax: [false, false, true] },
-            // Edges - horizontal edges (along Z) can only move in Y, vertical edges (along Y) can only move in Z
-            { position: [minX, minY, midZ], type: 'edge', axis: 'y', affectsMin: [false, true, false], affectsMax: [false, false, false], edgeDirection: 'z' },
-            { position: [minX, midY, maxZ], type: 'edge', axis: 'z', affectsMin: [false, false, false], affectsMax: [false, false, true], edgeDirection: 'y' },
-            { position: [minX, maxY, midZ], type: 'edge', axis: 'y', affectsMin: [false, false, false], affectsMax: [false, true, false], edgeDirection: 'z' },
-            { position: [minX, midY, minZ], type: 'edge', axis: 'z', affectsMin: [false, false, true], affectsMax: [false, false, false], edgeDirection: 'y' },
-          ];
-        case 'XZ':
-        default:
-          return [
-            // Corners - can move in X and Z
-            { position: [minX, minY, minZ], type: 'corner', axis: 'xz', affectsMin: [true, false, true], affectsMax: [false, false, false] },
-            { position: [maxX, minY, minZ], type: 'corner', axis: 'xz', affectsMin: [false, false, true], affectsMax: [true, false, false] },
-            { position: [maxX, minY, maxZ], type: 'corner', axis: 'xz', affectsMin: [false, false, false], affectsMax: [true, false, true] },
-            { position: [minX, minY, maxZ], type: 'corner', axis: 'xz', affectsMin: [true, false, false], affectsMax: [false, false, true] },
-            // Edges - edges along X can only move in Z, edges along Z can only move in X
-            { position: [midX, minY, minZ], type: 'edge', axis: 'z', affectsMin: [false, false, true], affectsMax: [false, false, false], edgeDirection: 'x' },
-            { position: [maxX, minY, midZ], type: 'edge', axis: 'x', affectsMin: [false, false, false], affectsMax: [true, false, false], edgeDirection: 'z' },
-            { position: [midX, minY, maxZ], type: 'edge', axis: 'z', affectsMin: [false, false, false], affectsMax: [false, false, true], edgeDirection: 'x' },
-            { position: [minX, minY, midZ], type: 'edge', axis: 'x', affectsMin: [true, false, false], affectsMax: [false, false, false], edgeDirection: 'z' },
-          ];
-      }
-    }
-
-    // 3D mode: 8 corners + 12 edges + 6 faces
-    return [
-      // 8 Corners - can move freely in all 3 axes
-      { position: [minX, minY, minZ], type: 'corner', axis: 'xyz', affectsMin: [true, true, true], affectsMax: [false, false, false] },
-      { position: [maxX, minY, minZ], type: 'corner', axis: 'xyz', affectsMin: [false, true, true], affectsMax: [true, false, false] },
-      { position: [maxX, maxY, minZ], type: 'corner', axis: 'xyz', affectsMin: [false, false, true], affectsMax: [true, true, false] },
-      { position: [minX, maxY, minZ], type: 'corner', axis: 'xyz', affectsMin: [true, false, true], affectsMax: [false, true, false] },
-      { position: [minX, minY, maxZ], type: 'corner', axis: 'xyz', affectsMin: [true, true, false], affectsMax: [false, false, true] },
-      { position: [maxX, minY, maxZ], type: 'corner', axis: 'xyz', affectsMin: [false, true, false], affectsMax: [true, false, true] },
-      { position: [maxX, maxY, maxZ], type: 'corner', axis: 'xyz', affectsMin: [false, false, false], affectsMax: [true, true, true] },
-      { position: [minX, maxY, maxZ], type: 'corner', axis: 'xyz', affectsMin: [true, false, false], affectsMax: [false, true, true] },
-
-      // 12 Edges - can move in the plane perpendicular to edge direction (2 axes)
-      // Bottom edges (Y = minY) - edges along X can move in Y and Z
-      { position: [midX, minY, minZ], type: 'edge', axis: 'yz', affectsMin: [false, true, true], affectsMax: [false, false, false], edgeDirection: 'x' },
-      { position: [midX, minY, maxZ], type: 'edge', axis: 'yz', affectsMin: [false, true, false], affectsMax: [false, false, true], edgeDirection: 'x' },
-      // Bottom edges along Z can move in X and Y
-      { position: [maxX, minY, midZ], type: 'edge', axis: 'xy', affectsMin: [false, true, false], affectsMax: [true, false, false], edgeDirection: 'z' },
-      { position: [minX, minY, midZ], type: 'edge', axis: 'xy', affectsMin: [true, true, false], affectsMax: [false, false, false], edgeDirection: 'z' },
-      // Top edges (Y = maxY) - edges along X can move in Y and Z
-      { position: [midX, maxY, minZ], type: 'edge', axis: 'yz', affectsMin: [false, false, true], affectsMax: [false, true, false], edgeDirection: 'x' },
-      { position: [midX, maxY, maxZ], type: 'edge', axis: 'yz', affectsMin: [false, false, false], affectsMax: [false, true, true], edgeDirection: 'x' },
-      // Top edges along Z can move in X and Y
-      { position: [maxX, maxY, midZ], type: 'edge', axis: 'xy', affectsMin: [false, false, false], affectsMax: [true, true, false], edgeDirection: 'z' },
-      { position: [minX, maxY, midZ], type: 'edge', axis: 'xy', affectsMin: [true, false, false], affectsMax: [false, true, false], edgeDirection: 'z' },
-      // Vertical edges (along Y) - can move in X and Z
-      { position: [minX, midY, minZ], type: 'edge', axis: 'xz', affectsMin: [true, false, true], affectsMax: [false, false, false], edgeDirection: 'y' },
-      { position: [maxX, midY, minZ], type: 'edge', axis: 'xz', affectsMin: [false, false, true], affectsMax: [true, false, false], edgeDirection: 'y' },
-      { position: [maxX, midY, maxZ], type: 'edge', axis: 'xz', affectsMin: [false, false, false], affectsMax: [true, false, true], edgeDirection: 'y' },
-      { position: [minX, midY, maxZ], type: 'edge', axis: 'xz', affectsMin: [true, false, false], affectsMax: [false, false, true], edgeDirection: 'y' },
-
-      // 6 Faces - can only move in 1 axis (perpendicular to face)
-      { position: [minX, midY, midZ], type: 'face', axis: 'x', affectsMin: [true, false, false], affectsMax: [false, false, false] },
-      { position: [maxX, midY, midZ], type: 'face', axis: 'x', affectsMin: [false, false, false], affectsMax: [true, false, false] },
-      { position: [midX, minY, midZ], type: 'face', axis: 'y', affectsMin: [false, true, false], affectsMax: [false, false, false] },
-      { position: [midX, maxY, midZ], type: 'face', axis: 'y', affectsMin: [false, false, false], affectsMax: [false, true, false] },
-      { position: [midX, midY, minZ], type: 'face', axis: 'z', affectsMin: [false, false, true], affectsMax: [false, false, false] },
-      { position: [midX, midY, maxZ], type: 'face', axis: 'z', affectsMin: [false, false, false], affectsMax: [false, false, true] },
-    ];
-  }, [dimension, plane, currentMin, currentMax]);
-
-  const handleDragStart = useCallback(() => {
-    setIsDragging(true);
+  const handleDragStart = useCallback((spec: BoundsHandleSpec) => {
     interaction.setGizmoDragging(true);
+    dragStartRef.current = propBounds;
+    dragBoundsRef.current = propBounds;
+    setDragBounds(propBounds);
+    setActiveHandle(spec);
+  }, [interaction, propBounds]);
 
-    const minCopy = [...min_bound];
-    const maxCopy = [...max_bound];
-    setLocalMinBound(minCopy);
-    setLocalMaxBound(maxCopy);
-    localMinRef.current = minCopy;
-    localMaxRef.current = maxCopy;
-  }, [interaction, min_bound, max_bound]);
-
-  const handleDrag = useCallback((handle: HandleInfo, newPosition: [number, number, number]) => {
-    // Use refs to get current values to avoid stale closures
-    const newMin = [...localMinRef.current];
-    const newMax = [...localMaxRef.current];
-
-    // Update bounds based on which axes this handle affects
-    for (let i = 0; i < 3; i++) {
-      if (handle.affectsMin[i]) {
-        // Ensure min doesn't exceed max - cell_size
-        newMin[i] = Math.min(newPosition[i], newMax[i] - cell_size);
-      }
-      if (handle.affectsMax[i]) {
-        // Ensure max doesn't go below min + cell_size
-        newMax[i] = Math.max(newPosition[i], newMin[i] + cell_size);
-      }
-    }
-
-    // Update refs and local state only
-    localMinRef.current = newMin;
-    localMaxRef.current = newMax;
-    setLocalMinBound(newMin);
-    setLocalMaxBound(newMax);
-  }, [cell_size]);
+  const handleDrag = useCallback((spec: BoundsHandleSpec, pointer: Vec3, mods: DragModifiers) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    const next = applyBoundsDrag(start, spec, pointer, cell, mods);
+    dragBoundsRef.current = next;
+    setDragBounds(next);
+  }, [cell]);
 
   const handleDragEnd = useCallback(() => {
-    // Set dragging to false
-    setIsDragging(false);
+    const next = dragBoundsRef.current;
+    dragStartRef.current = null;
+    dragBoundsRef.current = null;
+    setActiveHandle(null);
+    // Keep drawing the dragged bounds until the scene echoes them back, so
+    // the box does not flash to its old size for a round trip.
+    if (!next) {
+      setDragBounds(null);
+      interaction.setGizmoDragging(false);
+      return;
+    }
 
-    const newMin = localMinRef.current;
-    const newMax = localMaxRef.current;
-
-    // Calculate the center of bounds
-    const centerX = (newMin[0] + newMax[0]) / 2;
-    const centerY = (newMin[1] + newMax[1]) / 2;
-    const centerZ = (newMin[2] + newMax[2]) / 2;
-
-    // Adjust bounds to be relative to new center (so center becomes origin)
-    const adjustedMin = [
-      newMin[0] - centerX,
-      newMin[1] - centerY,
-      newMin[2] - centerZ
-    ];
-    const adjustedMax = [
-      newMax[0] - centerX,
-      newMax[1] - centerY,
-      newMax[2] - centerZ
-    ];
+    const centre: Vec3 = [0, 1, 2].map((i) => (next.min[i] + next.max[i]) / 2) as Vec3;
+    const adjustedMin = next.min.map((v, i) => v - centre[i]);
+    const adjustedMax = next.max.map((v, i) => v - centre[i]);
 
     const object = getObject?.(objectId);
     if (object) {
@@ -278,36 +264,28 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
       const currentRot = vectorArray(transform.rotation, [0, 0, 0]);
       const currentScale = vectorArray(transform.scale, [1, 1, 1]);
 
-      // Center offset is in local space, need to rotate it to world space
-      const localCenterOffset = new THREE.Vector3(centerX, centerY, centerZ);
-      const rotation = new THREE.Euler(currentRot[0], currentRot[1], currentRot[2], 'ZXY');
-      const worldCenterOffset = localCenterOffset.applyEuler(rotation);
-
-      // New position = current position + rotated center offset
-      const newPosition: [number, number, number] = [
-        currentPos[0] + worldCenterOffset.x,
-        currentPos[1] + worldCenterOffset.y,
-        currentPos[2] + worldCenterOffset.z
-      ];
+      // The centre offset is local (rotated and scaled with the object); the position is in the parent's frame.
+      const offset = new THREE.Vector3(
+        centre[0] * currentScale[0],
+        centre[1] * currentScale[1],
+        centre[2] * currentScale[2],
+      ).applyEuler(new THREE.Euler(currentRot[0], currentRot[1], currentRot[2], 'ZXY'));
 
       void Promise.all([
         sceneWrites.updateComponentField(objectId, componentName, 'min_bound', adjustedMin),
         sceneWrites.updateComponentField(objectId, componentName, 'max_bound', adjustedMax),
         sceneWrites.updateObjectTransform(objectId, {
-          position: newPosition,
+          position: [currentPos[0] + offset.x, currentPos[1] + offset.y, currentPos[2] + offset.z],
           rotation: currentRot,
           scale: currentScale,
         }),
-      ]);
+      ]).finally(() => setDragBounds(null));
+    } else {
+      setDragBounds(null);
     }
 
     interaction.setGizmoDragging(false);
   }, [objectId, componentName, getObject, interaction, sceneWrites]);
-
-  // Create stable drag handlers for each handle
-  const createDragHandler = useCallback((handle: HandleInfo) => {
-    return (newPos: [number, number, number]) => handleDrag(handle, newPos);
-  }, [handleDrag]);
 
   // Local state for height slider (for smooth dragging)
   const [localPlanePosition, setLocalPlanePosition] = useState(plane_position);
@@ -328,109 +306,66 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
     void sceneWrites.updateComponentField(objectId, componentName, 'plane_position', finalHeight);
   }, [objectId, componentName, sceneWrites]);
 
-  // Generate box edges for wireframe (only during drag)
-  const boxEdges = useMemo(() => {
-    if (!isDragging) return [];
-
-    const [minX, minY, minZ] = currentMin;
-    const [maxX, maxY, maxZ] = currentMax;
-
-    if (dimension === '2D') {
-      let corners: [number, number, number][];
-      switch (plane) {
-        case 'XY':
-          corners = [
-            [minX, minY, minZ],
-            [maxX, minY, minZ],
-            [maxX, maxY, minZ],
-            [minX, maxY, minZ],
-          ];
-          break;
-        case 'YZ':
-          corners = [
-            [minX, minY, minZ],
-            [minX, maxY, minZ],
-            [minX, maxY, maxZ],
-            [minX, minY, maxZ],
-          ];
-          break;
-        case 'XZ':
-        default:
-          corners = [
-            [minX, minY, minZ],
-            [maxX, minY, minZ],
-            [maxX, minY, maxZ],
-            [minX, minY, maxZ],
-          ];
-          break;
-      }
-      return [
-        [corners[0], corners[1]],
-        [corners[1], corners[2]],
-        [corners[2], corners[3]],
-        [corners[3], corners[0]],
-      ];
-    }
-
-    // 3D box edges
-    const corners: [number, number, number][] = [
-      [minX, minY, minZ],
-      [maxX, minY, minZ],
-      [maxX, maxY, minZ],
-      [minX, maxY, minZ],
-      [minX, minY, maxZ],
-      [maxX, minY, maxZ],
-      [maxX, maxY, maxZ],
-      [minX, maxY, maxZ],
-    ];
-
-    return [
-      [corners[0], corners[1]], [corners[1], corners[5]], [corners[5], corners[4]], [corners[4], corners[0]],
-      [corners[3], corners[2]], [corners[2], corners[6]], [corners[6], corners[7]], [corners[7], corners[3]],
-      [corners[0], corners[3]], [corners[1], corners[2]], [corners[5], corners[6]], [corners[4], corners[7]],
-    ];
-  }, [isDragging, currentMin, currentMax, dimension, plane]);
+  const dragging = activeHandle !== null;
+  const segments = useMemo(() => (dragging ? boxSegments(bounds, fixedNormal) : null), [dragging, bounds, fixedNormal]);
+  const sizeLabel = useMemo(() => {
+    if (!dragging) return null;
+    const axes = is2d ? ([0, 1, 2] as Axis[]).filter((axis) => axis !== fixedNormal) : ([0, 1, 2] as Axis[]);
+    const cells = cell !== null ? cellCounts(bounds, cell) : null;
+    return {
+      size: axes.map((axis) => formatLength(bounds.max[axis] - bounds.min[axis])).join(' × '),
+      cells: cells ? `${axes.map((axis) => cells[axis]).join(' × ')} cells` : null,
+    };
+  }, [dragging, bounds, cell, is2d, fixedNormal]);
+  // The label sits next to the dragged handle, at its current place.
+  const labelAnchor = useMemo(
+    () => (activeHandle ? handles.find((h) => h.id === activeHandle.id)?.position ?? activeHandle.position : null),
+    [activeHandle, handles],
+  );
 
   return (
-    <group userData={{ [VOLUME_DEPTH_SKIP_FLAG]: true }}>
-      {/* Show edges during drag (only when not locked) */}
-      {!isLocked && isDragging && boxEdges.map((edge, i) => (
+    <group ref={rootRef} userData={{ [VOLUME_DEPTH_SKIP_FLAG]: true }}>
+      {showHandles && segments && (
         <Line
-          key={`drag-edge-${i}`}
-        points={edge as [ThreeTypes.Vector3Tuple, ThreeTypes.Vector3Tuple]}
-          color="#ff8800"
-          lineWidth={2}
+          points={segments as ThreeTypes.Vector3Tuple[]}
+          segments
+          color={colors.accent}
+          lineWidth={1}
           transparent
-          opacity={0.8}
+          opacity={0.6}
+          depthTest={false}
+          renderOrder={999}
           raycast={() => null}
+        />
+      )}
+
+      {showHandles && handles.map((spec) => (
+        <FieldHandle
+          key={spec.id}
+          spec={spec}
+          colors={colors}
+          active={activeHandle?.id === spec.id}
+          onDragStart={handleDragStart}
+          onDrag={handleDrag}
+          onDragEnd={handleDragEnd}
+          setGizmoDragging={interaction.setGizmoDragging}
         />
       ))}
 
-      {/* Handles for resizing bounds (hidden when locked) */}
-      {!isLocked && handles.map((handle, i) => (
-        <FieldHandle
-          key={`handle-${handle.type}-${i}`}
-          position={handle.position}
-          type={handle.type}
-          axis={handle.axis}
-          onDragStart={handleDragStart}
-          onDrag={createDragHandler(handle)}
-          onDragEnd={handleDragEnd}
-          setGizmoDragging={interaction.setGizmoDragging}
-          color={handle.type === 'corner' ? '#ff4444' : handle.type === 'edge' ? '#ff6666' : '#ff8888'}
-          hoverColor="#ffff00"
-          activeColor="#00ff00"
-          affectsMin={handle.affectsMin}
-          affectsMax={handle.affectsMax}
-          edgeDirection={handle.edgeDirection}
-        />
-      ))}
+      {showHandles && sizeLabel && labelAnchor && (
+        <Html position={labelAnchor} zIndexRange={[20, 0]} style={{ pointerEvents: 'none' }}>
+          <div style={labelStyle}>
+            <div>{sizeLabel.size}</div>
+            {sizeLabel.cells && <div style={{ opacity: 0.7 }}>{sizeLabel.cells}</div>}
+          </div>
+        </Html>
+      )}
 
       {/* Height slider for Slices renderer in 3D mode (always shown, even when locked) */}
       {dimension === '3D' && render_mode === 'Slices' && (
         <FieldHeightSlider
-          minBound={currentMin}
-          maxBound={currentMax}
+          minBound={bounds.min}
+          maxBound={bounds.max}
           plane={plane_axis as 'XY' | 'XZ' | 'YZ'}
           height={localPlanePosition}
           onHeightChange={handleHeightChange}

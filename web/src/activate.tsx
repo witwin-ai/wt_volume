@@ -1,6 +1,6 @@
 import type ReactTypes from 'react';
 import { React } from './runtime';
-import type { FrontendHost, HostSceneObject } from '@witwin/host';
+import type { FrontendHost, HostSceneObject, TransformToolName } from '@witwin/host';
 import VolumeVisualizer, { volumeVisualizerConfig } from './gizmos/VolumeVisualizer';
 import SDFVisualizer, { sdfVisualizerConfig } from './gizmos/SDFVisualizer';
 import FieldVisualizer, { fieldVisualizerConfig } from './gizmos/FieldVisualizer';
@@ -29,11 +29,13 @@ function fieldData(component: any, object: HostSceneObject): any {
 function FieldBoundsGizmoObject({
   object,
   selected,
+  tool,
   host,
 }: {
   object: HostSceneObject;
   selected: boolean;
   hovered: boolean;
+  tool?: TransformToolName;
   host: FrontendHost;
 }) {
   if (!selected) return null;
@@ -42,8 +44,9 @@ function FieldBoundsGizmoObject({
   return (
     <FieldGizmo
       objectId={object.id}
-      fieldData={fieldData(component, object)}
+      fieldData={{ ...fieldData(component, object), cell_size: getComponentValue<number | undefined>(component, 'cell_size', undefined) }}
       isLocked={!!(object as any).locked}
+      tool={tool}
       getObject={(objectId) => host.services.get('scene').getObjects()[objectId]}
       interaction={host.interaction}
       sceneWrites={host.services.get('scene')}
