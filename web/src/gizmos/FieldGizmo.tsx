@@ -8,15 +8,15 @@ import { VOLUME_DEPTH_SKIP_FLAG } from './VolumeDepthPrepass';
 import {
   PLANE_NORMAL,
   applyBoundsDrag,
+  applyBoundsMove,
   buildBoundsHandles,
   cellCounts,
   formatLength,
-  pickFacingAxis,
+  pickRectAxis,
   type Axis,
   type Bounds,
   type BoundsHandleSpec,
   type DragModifiers,
-  type Side,
   type Vec3,
 } from './boundsLayout';
 
@@ -120,9 +120,6 @@ function boxSegments(bounds: Bounds, normal2d: Axis | null): Vec3[] {
   return pairs.flatMap(([i, j]) => [c[i], c[j]]);
 }
 
-/** cos 10°: within this of head-on, the depth handles are hidden. */
-const HEAD_ON_COS = Math.cos((10 * Math.PI) / 180);
-
 const labelStyle: ReactTypes.CSSProperties = {
   transform: 'translate(14px, -50%)',
   padding: '3px 7px',
@@ -139,12 +136,14 @@ const labelStyle: ReactTypes.CSSProperties = {
 /**
  * Resize gizmo of a Field's bounds, used by the Bounds tool (T).
  *
- * Handles follow a rect tool: corners and sides on the face that looks at the
- * camera, plus the near and far face centres for depth (see boundsLayout.ts).
- * They move to another face as the view turns. While dragging, the box and
- * its size in metres (and cells, when the Field has a cell size) are shown.
- * Ctrl snaps (to whole cells, else to a round step), Alt resizes about the
- * centre, Shift keeps a corner's aspect ratio.
+ * Handles follow Unity's Rect tool on a 3D object: a rectangle on the box's
+ * centre slice, in the plane that shows the largest area on screen, with
+ * corners, sides and a centre disc that moves the box in that plane (see
+ * boundsLayout.ts). The plane changes as the view turns, never during a drag.
+ * While dragging, the box and its size in metres (and cells, when the Field
+ * has a cell size) are shown. Ctrl snaps (to whole cells, else to a round
+ * step), Alt resizes about the centre, Shift keeps a corner's aspect ratio
+ * or keeps the disc on one axis.
  *
  * Bounds are relative to the object's origin; on release the box is
  * re-centred on it and the object moves by the centre offset.
@@ -188,40 +187,35 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
   const dragBoundsRef = useRef<Bounds | null>(null);
   const bounds = dragBounds ?? propBounds;
 
-  // Face the handles sit on. 2D Fields use their own plane; 3D Fields the
-  // face nearest the camera, re-picked every frame except during a drag.
+  // Normal axis of the rect plane. 2D Fields use their own plane; 3D Fields
+  // the plane with the largest area on screen, re-picked every frame except
+  // during a drag (Unity locks it the same way).
   const fixedNormal: Axis | null = is2d ? (PLANE_NORMAL[plane] ?? 1) : null;
-  const [facing, setFacing] = useState<{ normal: Axis; near: Side; headOn: boolean }>({ normal: fixedNormal ?? 1, near: 'max', headOn: false });
-  const facingRef = useRef(facing);
+  const [rectNormal, setRectNormal] = useState<Axis>(fixedNormal ?? 1);
+  const rectNormalRef = useRef(rectNormal);
   const showHandles = !isLocked && tool === 'bounds';
 
   useFrame(() => {
     if (!showHandles || fixedNormal !== null || dragStartRef.current || !rootRef.current) return;
-    const local = rootRef.current.worldToLocal(camera.getWorldPosition(new THREE.Vector3()));
-    const toCamera: Vec3 = [0, 1, 2].map((i) =>
-      local.getComponent(i) - (bounds.min[i] + bounds.max[i]) / 2,
-    ) as Vec3;
-    const normal = pickFacingAxis(toCamera, facingRef.current.normal);
-    const near: Side = toCamera[normal] >= 0 ? 'max' : 'min';
-    // Looking (almost) straight down the normal, both depth dots land on the
-    // rect's centre and a drag along the view axis has no usable plane.
-    const length = Math.hypot(...toCamera);
-    const headOn = length > 0 && Math.abs(toCamera[normal]) / length > HEAD_ON_COS;
-    const current = facingRef.current;
-    if (normal !== current.normal || near !== current.near || headOn !== current.headOn) {
-      facingRef.current = { normal, near, headOn };
-      setFacing(facingRef.current);
+    // The world matrix's basis columns are the local axes with rotation and
+    // every parent scale applied; times the box size they are its sides.
+    const basis = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    rootRef.current.matrixWorld.extractBasis(basis[0], basis[1], basis[2]);
+    const edges = basis.map((v, i) => {
+      const size = Math.abs(bounds.max[i] - bounds.min[i]) || 1;
+      return [v.x * size, v.y * size, v.z * size] as Vec3;
+    }) as [Vec3, Vec3, Vec3];
+    const view = camera.getWorldDirection(new THREE.Vector3());
+    const normal = pickRectAxis(edges, [view.x, view.y, view.z], rectNormalRef.current);
+    if (normal !== rectNormalRef.current) {
+      rectNormalRef.current = normal;
+      setRectNormal(normal);
     }
   });
 
   const handles = useMemo(
-    () => buildBoundsHandles(
-      bounds,
-      fixedNormal ?? facing.normal,
-      fixedNormal !== null ? 'min' : facing.near,
-      !is2d && !facing.headOn,
-    ),
-    [bounds, fixedNormal, facing, is2d],
+    () => buildBoundsHandles(bounds, fixedNormal ?? rectNormal),
+    [bounds, fixedNormal, rectNormal],
   );
 
   const handleDragStart = useCallback((spec: BoundsHandleSpec) => {
@@ -235,7 +229,9 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
   const handleDrag = useCallback((spec: BoundsHandleSpec, pointer: Vec3, mods: DragModifiers) => {
     const start = dragStartRef.current;
     if (!start) return;
-    const next = applyBoundsDrag(start, spec, pointer, cell, mods);
+    const next = spec.kind === 'move'
+      ? applyBoundsMove(start, spec, pointer, cell, mods)
+      : applyBoundsDrag(start, spec, pointer, cell, mods);
     dragBoundsRef.current = next;
     setDragBounds(next);
   }, [cell]);
@@ -308,15 +304,16 @@ const FieldGizmo: ReactTypes.FC<FieldGizmoProps> = ({
 
   const dragging = activeHandle !== null;
   const segments = useMemo(() => (dragging ? boxSegments(bounds, fixedNormal) : null), [dragging, bounds, fixedNormal]);
+  // A move keeps the size, so it shows the box but no size label.
   const sizeLabel = useMemo(() => {
-    if (!dragging) return null;
+    if (!dragging || activeHandle?.kind === 'move') return null;
     const axes = is2d ? ([0, 1, 2] as Axis[]).filter((axis) => axis !== fixedNormal) : ([0, 1, 2] as Axis[]);
     const cells = cell !== null ? cellCounts(bounds, cell) : null;
     return {
       size: axes.map((axis) => formatLength(bounds.max[axis] - bounds.min[axis])).join(' × '),
       cells: cells ? `${axes.map((axis) => cells[axis]).join(' × ')} cells` : null,
     };
-  }, [dragging, bounds, cell, is2d, fixedNormal]);
+  }, [dragging, activeHandle, bounds, cell, is2d, fixedNormal]);
   // The label sits next to the dragged handle, at its current place.
   const labelAnchor = useMemo(
     () => (activeHandle ? handles.find((h) => h.id === activeHandle.id)?.position ?? activeHandle.position : null),

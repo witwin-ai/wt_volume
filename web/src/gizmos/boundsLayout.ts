@@ -6,21 +6,22 @@ export type Side = 'min' | 'max';
 export type Vec3 = [number, number, number];
 
 /**
- * One resize handle. `axes` are the local axes it moves along (one for an
- * edge or a face, two for a corner); `sides` says which bound each of those
- * axes writes.
+ * One handle of the rect. `axes` are the local axes it moves along (one for
+ * an edge, two for a corner or the centre disc); `sides` says which bound
+ * each of those axes writes. The centre disc (`move`) writes no single bound:
+ * it shifts the whole box.
  */
 export interface BoundsHandleSpec {
   id: string;
-  kind: 'corner' | 'edge' | 'face';
+  kind: 'corner' | 'edge' | 'move';
   position: Vec3;
   axes: Axis[];
   sides: Partial<Record<Axis, Side>>;
+  /** Normal axis of the rect plane the handle lies in. */
+  normal: Axis;
   /** Edge only: the drawn side of the rectangle, and the axis it runs along. */
   segment?: [Vec3, Vec3];
   edgeAxis?: Axis;
-  /** Face only: on the far side of the box from the camera; drawn dimmed. */
-  back?: boolean;
 }
 
 export interface Bounds {
@@ -29,11 +30,11 @@ export interface Bounds {
 }
 
 export interface DragModifiers {
-  /** Ctrl/Cmd: sizes snap to whole cells. */
+  /** Ctrl/Cmd: sizes, or the centre disc's move, snap to whole cells. */
   snap: boolean;
   /** Alt: the opposite bound mirrors the move, so the centre stays put. */
   symmetric: boolean;
-  /** Shift on a corner: both axes keep their ratio. */
+  /** Shift: a corner keeps its aspect ratio; the centre disc moves along one axis only. */
   uniform: boolean;
 }
 
@@ -43,25 +44,12 @@ export const NO_MODIFIERS: DragModifiers = { snap: false, symmetric: false, unif
 export const PLANE_NORMAL: Record<string, Axis> = { XY: 2, XZ: 1, YZ: 0 };
 
 /**
- * Hysteresis of the facing-axis pick: the handles move to another face only
- * when the camera looks down that axis this much more squarely than the
- * current one. Without it, a view near 45 degrees flips the handles every
- * frame. 1.15 is about 7 degrees past the diagonal.
+ * Hysteresis of the rect-plane pick: the rect moves to another plane only
+ * when that plane's on-screen area beats the current one's by this factor.
+ * Without it, a view near 45 degrees flips the rect every frame. Unity has
+ * none, but its handles redraw only on repaint; ours redraw every frame.
  */
-export const FACING_HYSTERESIS = 1.15;
-
-/**
- * Local axis the camera looks down most squarely. `toCamera` is the vector
- * from the box centre to the camera in the box's local frame.
- */
-export function pickFacingAxis(toCamera: Vec3, current: Axis | null, hysteresis = FACING_HYSTERESIS): Axis {
-  const magnitude = toCamera.map(Math.abs) as Vec3;
-  let best: Axis = 0;
-  if (magnitude[1] > magnitude[best]) best = 1;
-  if (magnitude[2] > magnitude[best]) best = 2;
-  if (current === null || current === best) return best;
-  return magnitude[best] > magnitude[current] * hysteresis ? best : current;
-}
+export const RECT_AXIS_HYSTERESIS = 1.15;
 
 function otherAxes(normal: Axis): [Axis, Axis] {
   return normal === 0 ? [1, 2] : normal === 1 ? [0, 2] : [0, 1];
@@ -77,17 +65,51 @@ function point(entries: Array<[Axis, number]>): Vec3 {
   return p;
 }
 
+function cross(u: Vec3, v: Vec3): Vec3 {
+  return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+}
+
+function projectOnPlane(v: Vec3, unitNormal: Vec3): Vec3 {
+  const d = v[0] * unitNormal[0] + v[1] * unitNormal[1] + v[2] * unitNormal[2];
+  return [v[0] - d * unitNormal[0], v[1] - d * unitNormal[1], v[2] - d * unitNormal[2]];
+}
+
 /**
- * Handles in the style of a rect tool: four corners and four sides on the
- * face that looks at the camera (normal axis `normal`, on side `near`), plus,
- * with `withDepth`, one handle at the centre of the near and the far face for
- * the third axis. Ten handles in 3D, eight in 2D.
+ * Normal axis of the rect plane, chosen as Unity's Rect tool does
+ * (UnityCsReference `Tools.GetRectAxisForViewDir`): for each local axis,
+ * take the box's two other sides as world vectors, project them onto the
+ * screen plane (perpendicular to `viewDir`) and measure the area they span.
+ * The plane with the largest on-screen area wins.
+ *
+ * `edges[i]` is local axis i in world space, multiplied by the box size
+ * along it, so rotation, object scale and box proportions all count.
+ * `viewDir` is the camera's forward direction, unit length.
  */
-export function buildBoundsHandles(bounds: Bounds, normal: Axis, near: Side, withDepth: boolean): BoundsHandleSpec[] {
+export function pickRectAxis(edges: [Vec3, Vec3, Vec3], viewDir: Vec3, current: Axis | null, hysteresis = RECT_AXIS_HYSTERESIS): Axis {
+  const score = (normal: Axis): number => {
+    const [a, b] = otherAxes(normal);
+    const c = cross(projectOnPlane(edges[a], viewDir), projectOnPlane(edges[b], viewDir));
+    return Math.hypot(c[0], c[1], c[2]);
+  };
+  const scores = [score(0), score(1), score(2)];
+  let best: Axis = 0;
+  if (scores[1] > scores[best]) best = 1;
+  if (scores[2] > scores[best]) best = 2;
+  if (current === null || current === best) return best;
+  return scores[best] > scores[current] * hysteresis ? best : current;
+}
+
+/**
+ * Handles of Unity's Rect tool on a 3D box: a rectangle on the box's centre
+ * slice perpendicular to `normal` (not on a face), with four corners, four
+ * sides and a centre disc that moves the box within that plane. Nine handles.
+ * A 2D Field passes its own plane's normal.
+ */
+export function buildBoundsHandles(bounds: Bounds, normal: Axis): BoundsHandleSpec[] {
   const [a, b] = otherAxes(normal);
   const sides: Side[] = ['min', 'max'];
-  const nearValue = boundValue(bounds, normal, near);
   const mid = (axis: Axis) => (bounds.min[axis] + bounds.max[axis]) / 2;
+  const slice = mid(normal);
   const handles: BoundsHandleSpec[] = [];
 
   for (const sa of sides) {
@@ -95,9 +117,10 @@ export function buildBoundsHandles(bounds: Bounds, normal: Axis, near: Side, wit
       handles.push({
         id: `corner-${sa}-${sb}`,
         kind: 'corner',
-        position: point([[a, boundValue(bounds, a, sa)], [b, boundValue(bounds, b, sb)], [normal, nearValue]]),
+        position: point([[a, boundValue(bounds, a, sa)], [b, boundValue(bounds, b, sb)], [normal, slice]]),
         axes: [a, b],
         sides: { [a]: sa, [b]: sb },
+        normal,
       });
     }
   }
@@ -106,32 +129,29 @@ export function buildBoundsHandles(bounds: Bounds, normal: Axis, near: Side, wit
   for (const [moved, along] of [[a, b], [b, a]] as Array<[Axis, Axis]>) {
     for (const side of sides) {
       const value = boundValue(bounds, moved, side);
-      const start = point([[moved, value], [along, bounds.min[along]], [normal, nearValue]]);
-      const end = point([[moved, value], [along, bounds.max[along]], [normal, nearValue]]);
+      const start = point([[moved, value], [along, bounds.min[along]], [normal, slice]]);
+      const end = point([[moved, value], [along, bounds.max[along]], [normal, slice]]);
       handles.push({
         id: `edge-${moved}-${side}`,
         kind: 'edge',
-        position: point([[moved, value], [along, mid(along)], [normal, nearValue]]),
+        position: point([[moved, value], [along, mid(along)], [normal, slice]]),
         axes: [moved],
         sides: { [moved]: side },
+        normal,
         segment: [start, end],
         edgeAxis: along,
       });
     }
   }
 
-  if (withDepth) {
-    for (const side of sides) {
-      handles.push({
-        id: `face-${side}`,
-        kind: 'face',
-        position: point([[a, mid(a)], [b, mid(b)], [normal, boundValue(bounds, normal, side)]]),
-        axes: [normal],
-        sides: { [normal]: side },
-        back: side !== near,
-      });
-    }
-  }
+  handles.push({
+    id: 'move',
+    kind: 'move',
+    position: point([[a, mid(a)], [b, mid(b)], [normal, slice]]),
+    axes: [a, b],
+    sides: {},
+    normal,
+  });
   return handles;
 }
 
@@ -225,6 +245,42 @@ export function applyBoundsDrag(
     } else {
       min[axis] = start.max[axis] - size;
     }
+  }
+  return { min, max };
+}
+
+/**
+ * Bounds after the centre disc is dragged from `handle.position` to
+ * `pointer` (local): the box shifts along the rect's two axes. With
+ * `uniform` (Shift) only the axis that moved more is kept, as in Unity's
+ * Rect tool; with `snap` (Ctrl) each shift is a whole number of cells, else
+ * of `roundStep`.
+ */
+export function applyBoundsMove(
+  start: Bounds,
+  handle: BoundsHandleSpec,
+  pointer: Vec3,
+  cell: number | null,
+  mods: DragModifiers = NO_MODIFIERS,
+): Bounds {
+  const min = [...start.min] as Vec3;
+  const max = [...start.max] as Vec3;
+  const step = cell !== null && cell > 0 ? cell : roundStep(start);
+  const delta = new Map<Axis, number>();
+  for (const axis of handle.axes) {
+    const d = pointer[axis] - handle.position[axis];
+    delta.set(axis, Number.isFinite(d) ? d : 0);
+  }
+  if (mods.uniform && handle.axes.length === 2) {
+    const [p, q] = handle.axes;
+    if (Math.abs(delta.get(p) ?? 0) >= Math.abs(delta.get(q) ?? 0)) delta.set(q, 0);
+    else delta.set(p, 0);
+  }
+  for (const axis of handle.axes) {
+    let d = delta.get(axis) ?? 0;
+    if (mods.snap && step > 0) d = Math.round(d / step) * step;
+    min[axis] += d;
+    max[axis] += d;
   }
   return { min, max };
 }

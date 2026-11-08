@@ -6,9 +6,14 @@ import { screenConstantScale } from './fieldHitTarget';
 import { axisDragPlaneNormal, intersectDragPlane } from './dragPlane';
 import type { Axis, BoundsHandleSpec, DragModifiers, Vec3 } from './boundsLayout';
 
-/** Dot radius on screen, in px. Corners carry two axes, so they read a little larger. */
+/** Corner dot radius on screen, in px. */
 const CORNER_RADIUS_PX = 5;
-const FACE_RADIUS_PX = 4.5;
+/**
+ * Radius of the centre move disc on screen, in px. Unity draws it at 0.2 of
+ * the handle size, about 16 px; a little smaller here keeps small Fields'
+ * corners clear of it.
+ */
+const MOVE_RADIUS_PX = 14;
 /** Width of the band around a side that catches the pointer, in px. */
 const EDGE_HIT_PX = 10;
 /**
@@ -19,16 +24,19 @@ const EDGE_HIT_PX = 10;
 const EDGE_END_CLEARANCE_PX = 12;
 const EDGE_LINE_PX = 1.5;
 const EDGE_LINE_HOVER_PX = 3;
-/** Opacity of a handle on the far side of the box. */
-const BACK_OPACITY = 0.35;
+/** Fill opacity of the centre disc, at rest and lit. */
+const MOVE_FILL_OPACITY = 0.15;
+const MOVE_FILL_LIT_OPACITY = 0.35;
 
 /**
  * Handles draw over the scene (depthTest off) so they stay usable inside
- * other geometry and inside the Field's own volume. Back-facing handles are
- * dimmed from the layout instead (`spec.back`), since a wire box has no
- * surface to hide them.
+ * other geometry and inside the Field's own volume: the rect sits on the
+ * box's centre slice, so it is always inside it.
  */
 const HANDLE_RENDER_ORDER = 1000;
+
+/** Turns the XY-plane disc geometry into the rect plane of each normal axis. */
+const DISC_ROTATION: Record<Axis, Vec3> = { 0: [0, Math.PI / 2, 0], 1: [-Math.PI / 2, 0, 0], 2: [0, 0, 0] };
 
 export interface BoundsHandleColors {
   /** Ring, side lines and the active fill. */
@@ -56,8 +64,8 @@ function modifiersOf(event: PointerEvent): DragModifiers {
 const AXIS_VECTORS: Vec3[] = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
 /**
- * One resize handle of the bounds gizmo: a dot (corner, face) or a side of
- * the rectangle (edge). Its root must be a direct child of the gizmo group,
+ * One handle of the bounds gizmo: a corner dot, a side of the rectangle
+ * (edge) or the centre disc that moves the box (move). Its root must be a direct child of the gizmo group,
  * whose local frame is the Field's: the drag converts pointer hits into that
  * frame, so rotated, scaled and display-scaled Fields drag along their own
  * axes.
@@ -77,13 +85,15 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
   const hitRef = useRef<ThreeTypes.Mesh>(null);
 
   const isEdge = spec.kind === 'edge';
-  const radiusPx = spec.kind === 'corner' ? CORNER_RADIUS_PX : FACE_RADIUS_PX;
+  const isMove = spec.kind === 'move';
+  const radiusPx = isMove ? MOVE_RADIUS_PX : CORNER_RADIUS_PX;
   const lit = hovered || active;
-  const opacity = spec.back && !lit ? BACK_OPACITY : 1;
+  const restCursor = isMove ? 'move' : 'grab';
+  const dragCursor = isMove ? 'move' : 'grabbing';
 
   useFrame(() => {
     if (!isEdge && rootRef.current) {
-      const grow = lit ? 1.3 : 1;
+      const grow = lit && !isMove ? 1.3 : 1;
       rootRef.current.scale.setScalar(screenConstantScale(camera, rootRef.current, size.height, radiusPx * grow));
     }
     if (isEdge && hitRef.current && spec.segment && spec.edgeAxis !== undefined) {
@@ -116,15 +126,11 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
     const origin = object.getWorldPosition(new THREE.Vector3());
     const viewDir = camera.getWorldDirection(new THREE.Vector3());
 
-    // One axis: the plane that holds it and faces the camera best. Two axes:
-    // the plane they span, which is the face the handles sit on.
-    let normal: ThreeTypes.Vector3;
-    if (spec.axes.length === 1) {
-      normal = axisDragPlaneNormal(worldAxis(spec.axes[0]), viewDir);
-    } else {
-      const third = ([0, 1, 2] as Axis[]).find((axis) => !spec.axes.includes(axis)) ?? 2;
-      normal = worldAxis(third);
-    }
+    // One axis (a side): the plane that holds it and faces the camera best.
+    // Two axes (a corner, the disc): the rect plane itself, as in Unity.
+    const normal = spec.axes.length === 1
+      ? axisDragPlaneNormal(worldAxis(spec.axes[0]), viewDir)
+      : worldAxis(spec.normal);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
 
     const raycaster = new THREE.Raycaster();
@@ -146,7 +152,7 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
 
     setGizmoDragging(true);
     onDragStart(spec);
-    document.body.style.cursor = 'grabbing';
+    document.body.style.cursor = dragCursor;
     gl.domElement.setPointerCapture(e.pointerId);
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -171,13 +177,13 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-  }, [camera, gl, isEdge, spec, onDragStart, onDrag, onDragEnd, setGizmoDragging]);
+  }, [camera, gl, isEdge, dragCursor, spec, onDragStart, onDrag, onDragEnd, setGizmoDragging]);
 
   const handlePointerEnter = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
     setHovered(true);
-    if (!active) document.body.style.cursor = 'grab';
-  }, [active]);
+    if (!active) document.body.style.cursor = restCursor;
+  }, [active, restCursor]);
 
   const handlePointerLeave = useCallback((e: ThreeEvent<PointerEvent>) => {
     e.stopPropagation();
@@ -215,7 +221,39 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
     );
   }
 
-  // A dot: an accent sphere with a smaller fill sphere drawn over it, which
+  // The centre disc: an accent ring over a faint fill, like Unity's. The fill
+  // catches the pointer, so the whole disc is grabbable.
+  if (isMove) {
+    return (
+      <group
+        ref={rootRef}
+        position={spec.position}
+        rotation={DISC_ROTATION[spec.normal]}
+        userData={{ isGizmo: true }}
+        onPointerDown={handlePointerDown}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
+      >
+        <mesh renderOrder={HANDLE_RENDER_ORDER}>
+          <circleGeometry args={[1, 40]} />
+          <meshBasicMaterial
+            color={colors.accent}
+            transparent
+            opacity={lit ? MOVE_FILL_LIT_OPACITY : MOVE_FILL_OPACITY}
+            side={THREE.DoubleSide}
+            depthTest={false}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh renderOrder={HANDLE_RENDER_ORDER + 1} raycast={() => null}>
+          <ringGeometry args={[0.86, 1, 40]} />
+          <meshBasicMaterial color={colors.accent} side={THREE.DoubleSide} depthTest={false} depthWrite={false} />
+        </mesh>
+      </group>
+    );
+  }
+
+  // A corner: an accent sphere with a smaller fill sphere drawn over it, which
   // reads as a ringed disc from every side. Hover and drag fill it with the accent.
   return (
     <group
@@ -228,11 +266,11 @@ const FieldHandle: ReactTypes.FC<FieldHandleProps> = ({
     >
       <mesh renderOrder={HANDLE_RENDER_ORDER}>
         <sphereGeometry args={[1, 16, 12]} />
-        <meshBasicMaterial color={colors.accent} transparent opacity={opacity} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={colors.accent} depthTest={false} depthWrite={false} />
       </mesh>
       <mesh renderOrder={HANDLE_RENDER_ORDER + 1} raycast={() => null}>
         <sphereGeometry args={[0.6, 16, 12]} />
-        <meshBasicMaterial color={lit ? colors.accent : colors.fill} transparent opacity={opacity} depthTest={false} depthWrite={false} />
+        <meshBasicMaterial color={lit ? colors.accent : colors.fill} depthTest={false} depthWrite={false} />
       </mesh>
     </group>
   );

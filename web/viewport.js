@@ -2639,13 +2639,15 @@ function intersectDragPlane(ray, plane) {
 
 // src/gizmos/FieldHandle.tsx
 var CORNER_RADIUS_PX = 5;
-var FACE_RADIUS_PX = 4.5;
+var MOVE_RADIUS_PX = 14;
 var EDGE_HIT_PX = 10;
 var EDGE_END_CLEARANCE_PX = 12;
 var EDGE_LINE_PX = 1.5;
 var EDGE_LINE_HOVER_PX = 3;
-var BACK_OPACITY = 0.35;
+var MOVE_FILL_OPACITY = 0.15;
+var MOVE_FILL_LIT_OPACITY = 0.35;
 var HANDLE_RENDER_ORDER = 1e3;
+var DISC_ROTATION = { 0: [0, Math.PI / 2, 0], 1: [-Math.PI / 2, 0, 0], 2: [0, 0, 0] };
 function modifiersOf(event) {
   return { snap: event.ctrlKey || event.metaKey, symmetric: event.altKey, uniform: event.shiftKey };
 }
@@ -2664,12 +2666,14 @@ var FieldHandle = ({
   const rootRef = useRef(null);
   const hitRef = useRef(null);
   const isEdge = spec.kind === "edge";
-  const radiusPx = spec.kind === "corner" ? CORNER_RADIUS_PX : FACE_RADIUS_PX;
+  const isMove = spec.kind === "move";
+  const radiusPx = isMove ? MOVE_RADIUS_PX : CORNER_RADIUS_PX;
   const lit = hovered || active;
-  const opacity = spec.back && !lit ? BACK_OPACITY : 1;
+  const restCursor = isMove ? "move" : "grab";
+  const dragCursor = isMove ? "move" : "grabbing";
   useFrame(() => {
     if (!isEdge && rootRef.current) {
-      const grow = lit ? 1.3 : 1;
+      const grow = lit && !isMove ? 1.3 : 1;
       rootRef.current.scale.setScalar(screenConstantScale(camera, rootRef.current, size.height, radiusPx * grow));
     }
     if (isEdge && hitRef.current && spec.segment && spec.edgeAxis !== void 0) {
@@ -2694,13 +2698,7 @@ var FieldHandle = ({
     const worldAxis = (axis) => new THREE.Vector3(...AXIS_VECTORS[axis]).transformDirection(parentWorld);
     const origin = object.getWorldPosition(new THREE.Vector3());
     const viewDir = camera.getWorldDirection(new THREE.Vector3());
-    let normal;
-    if (spec.axes.length === 1) {
-      normal = axisDragPlaneNormal(worldAxis(spec.axes[0]), viewDir);
-    } else {
-      const third = [0, 1, 2].find((axis) => !spec.axes.includes(axis)) ?? 2;
-      normal = worldAxis(third);
-    }
+    const normal = spec.axes.length === 1 ? axisDragPlaneNormal(worldAxis(spec.axes[0]), viewDir) : worldAxis(spec.normal);
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, origin);
     const raycaster = new THREE.Raycaster();
     const hitLocal = (event) => {
@@ -2717,7 +2715,7 @@ var FieldHandle = ({
     const startPosition = [...spec.position];
     setGizmoDragging(true);
     onDragStart(spec);
-    document.body.style.cursor = "grabbing";
+    document.body.style.cursor = dragCursor;
     gl.domElement.setPointerCapture(e.pointerId);
     const handlePointerMove = (moveEvent) => {
       if (moveEvent.buttons === 0) return;
@@ -2738,12 +2736,12 @@ var FieldHandle = ({
     };
     window.addEventListener("pointermove", handlePointerMove);
     window.addEventListener("pointerup", handlePointerUp);
-  }, [camera, gl, isEdge, spec, onDragStart, onDrag, onDragEnd, setGizmoDragging]);
+  }, [camera, gl, isEdge, dragCursor, spec, onDragStart, onDrag, onDragEnd, setGizmoDragging]);
   const handlePointerEnter = useCallback((e) => {
     e.stopPropagation();
     setHovered(true);
-    if (!active) document.body.style.cursor = "grab";
-  }, [active]);
+    if (!active) document.body.style.cursor = restCursor;
+  }, [active, restCursor]);
   const handlePointerLeave = useCallback((e) => {
     e.stopPropagation();
     setHovered(false);
@@ -2775,6 +2773,32 @@ var FieldHandle = ({
       /* @__PURE__ */ React.createElement("meshBasicMaterial", { transparent: true, opacity: 0, depthWrite: false, colorWrite: false })
     ));
   }
+  if (isMove) {
+    return /* @__PURE__ */ React.createElement(
+      "group",
+      {
+        ref: rootRef,
+        position: spec.position,
+        rotation: DISC_ROTATION[spec.normal],
+        userData: { isGizmo: true },
+        onPointerDown: handlePointerDown,
+        onPointerEnter: handlePointerEnter,
+        onPointerLeave: handlePointerLeave
+      },
+      /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER }, /* @__PURE__ */ React.createElement("circleGeometry", { args: [1, 40] }), /* @__PURE__ */ React.createElement(
+        "meshBasicMaterial",
+        {
+          color: colors.accent,
+          transparent: true,
+          opacity: lit ? MOVE_FILL_LIT_OPACITY : MOVE_FILL_OPACITY,
+          side: THREE.DoubleSide,
+          depthTest: false,
+          depthWrite: false
+        }
+      )),
+      /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER + 1, raycast: () => null }, /* @__PURE__ */ React.createElement("ringGeometry", { args: [0.86, 1, 40] }), /* @__PURE__ */ React.createElement("meshBasicMaterial", { color: colors.accent, side: THREE.DoubleSide, depthTest: false, depthWrite: false }))
+    );
+  }
   return /* @__PURE__ */ React.createElement(
     "group",
     {
@@ -2785,8 +2809,8 @@ var FieldHandle = ({
       onPointerEnter: handlePointerEnter,
       onPointerLeave: handlePointerLeave
     },
-    /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER }, /* @__PURE__ */ React.createElement("sphereGeometry", { args: [1, 16, 12] }), /* @__PURE__ */ React.createElement("meshBasicMaterial", { color: colors.accent, transparent: true, opacity, depthTest: false, depthWrite: false })),
-    /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER + 1, raycast: () => null }, /* @__PURE__ */ React.createElement("sphereGeometry", { args: [0.6, 16, 12] }), /* @__PURE__ */ React.createElement("meshBasicMaterial", { color: lit ? colors.accent : colors.fill, transparent: true, opacity, depthTest: false, depthWrite: false }))
+    /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER }, /* @__PURE__ */ React.createElement("sphereGeometry", { args: [1, 16, 12] }), /* @__PURE__ */ React.createElement("meshBasicMaterial", { color: colors.accent, depthTest: false, depthWrite: false })),
+    /* @__PURE__ */ React.createElement("mesh", { renderOrder: HANDLE_RENDER_ORDER + 1, raycast: () => null }, /* @__PURE__ */ React.createElement("sphereGeometry", { args: [0.6, 16, 12] }), /* @__PURE__ */ React.createElement("meshBasicMaterial", { color: lit ? colors.accent : colors.fill, depthTest: false, depthWrite: false }))
   );
 };
 var FieldHandle_default = FieldHandle;
@@ -3024,15 +3048,7 @@ var FieldHeightSlider_default = FieldHeightSlider;
 // src/gizmos/boundsLayout.ts
 var NO_MODIFIERS = { snap: false, symmetric: false, uniform: false };
 var PLANE_NORMAL = { XY: 2, XZ: 1, YZ: 0 };
-var FACING_HYSTERESIS = 1.15;
-function pickFacingAxis(toCamera, current, hysteresis = FACING_HYSTERESIS) {
-  const magnitude = toCamera.map(Math.abs);
-  let best = 0;
-  if (magnitude[1] > magnitude[best]) best = 1;
-  if (magnitude[2] > magnitude[best]) best = 2;
-  if (current === null || current === best) return best;
-  return magnitude[best] > magnitude[current] * hysteresis ? best : current;
-}
+var RECT_AXIS_HYSTERESIS = 1.15;
 function otherAxes(normal) {
   return normal === 0 ? [1, 2] : normal === 1 ? [0, 2] : [0, 1];
 }
@@ -3044,51 +3060,69 @@ function point(entries) {
   for (const [axis, value] of entries) p[axis] = value;
   return p;
 }
-function buildBoundsHandles(bounds, normal, near, withDepth) {
+function cross(u, v) {
+  return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+}
+function projectOnPlane(v, unitNormal) {
+  const d = v[0] * unitNormal[0] + v[1] * unitNormal[1] + v[2] * unitNormal[2];
+  return [v[0] - d * unitNormal[0], v[1] - d * unitNormal[1], v[2] - d * unitNormal[2]];
+}
+function pickRectAxis(edges, viewDir, current, hysteresis = RECT_AXIS_HYSTERESIS) {
+  const score = (normal) => {
+    const [a, b] = otherAxes(normal);
+    const c = cross(projectOnPlane(edges[a], viewDir), projectOnPlane(edges[b], viewDir));
+    return Math.hypot(c[0], c[1], c[2]);
+  };
+  const scores = [score(0), score(1), score(2)];
+  let best = 0;
+  if (scores[1] > scores[best]) best = 1;
+  if (scores[2] > scores[best]) best = 2;
+  if (current === null || current === best) return best;
+  return scores[best] > scores[current] * hysteresis ? best : current;
+}
+function buildBoundsHandles(bounds, normal) {
   const [a, b] = otherAxes(normal);
   const sides = ["min", "max"];
-  const nearValue = boundValue(bounds, normal, near);
   const mid = (axis) => (bounds.min[axis] + bounds.max[axis]) / 2;
+  const slice = mid(normal);
   const handles = [];
   for (const sa of sides) {
     for (const sb of sides) {
       handles.push({
         id: `corner-${sa}-${sb}`,
         kind: "corner",
-        position: point([[a, boundValue(bounds, a, sa)], [b, boundValue(bounds, b, sb)], [normal, nearValue]]),
+        position: point([[a, boundValue(bounds, a, sa)], [b, boundValue(bounds, b, sb)], [normal, slice]]),
         axes: [a, b],
-        sides: { [a]: sa, [b]: sb }
+        sides: { [a]: sa, [b]: sb },
+        normal
       });
     }
   }
   for (const [moved, along] of [[a, b], [b, a]]) {
     for (const side of sides) {
       const value = boundValue(bounds, moved, side);
-      const start = point([[moved, value], [along, bounds.min[along]], [normal, nearValue]]);
-      const end = point([[moved, value], [along, bounds.max[along]], [normal, nearValue]]);
+      const start = point([[moved, value], [along, bounds.min[along]], [normal, slice]]);
+      const end = point([[moved, value], [along, bounds.max[along]], [normal, slice]]);
       handles.push({
         id: `edge-${moved}-${side}`,
         kind: "edge",
-        position: point([[moved, value], [along, mid(along)], [normal, nearValue]]),
+        position: point([[moved, value], [along, mid(along)], [normal, slice]]),
         axes: [moved],
         sides: { [moved]: side },
+        normal,
         segment: [start, end],
         edgeAxis: along
       });
     }
   }
-  if (withDepth) {
-    for (const side of sides) {
-      handles.push({
-        id: `face-${side}`,
-        kind: "face",
-        position: point([[a, mid(a)], [b, mid(b)], [normal, boundValue(bounds, normal, side)]]),
-        axes: [normal],
-        sides: { [normal]: side },
-        back: side !== near
-      });
-    }
-  }
+  handles.push({
+    id: "move",
+    kind: "move",
+    position: point([[a, mid(a)], [b, mid(b)], [normal, slice]]),
+    axes: [a, b],
+    sides: {},
+    normal
+  });
   return handles;
 }
 function snapSize(size, step) {
@@ -3145,6 +3179,28 @@ function applyBoundsDrag(start, handle2, pointer, cell, mods = NO_MODIFIERS) {
     } else {
       min[axis] = start.max[axis] - size;
     }
+  }
+  return { min, max };
+}
+function applyBoundsMove(start, handle2, pointer, cell, mods = NO_MODIFIERS) {
+  const min = [...start.min];
+  const max = [...start.max];
+  const step = cell !== null && cell > 0 ? cell : roundStep(start);
+  const delta = /* @__PURE__ */ new Map();
+  for (const axis of handle2.axes) {
+    const d = pointer[axis] - handle2.position[axis];
+    delta.set(axis, Number.isFinite(d) ? d : 0);
+  }
+  if (mods.uniform && handle2.axes.length === 2) {
+    const [p, q] = handle2.axes;
+    if (Math.abs(delta.get(p) ?? 0) >= Math.abs(delta.get(q) ?? 0)) delta.set(q, 0);
+    else delta.set(p, 0);
+  }
+  for (const axis of handle2.axes) {
+    let d = delta.get(axis) ?? 0;
+    if (mods.snap && step > 0) d = Math.round(d / step) * step;
+    min[axis] += d;
+    max[axis] += d;
   }
   return { min, max };
 }
@@ -3234,7 +3290,6 @@ function boxSegments(bounds, normal2d) {
   const pairs = [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]];
   return pairs.flatMap(([i, j]) => [c[i], c[j]]);
 }
-var HEAD_ON_COS = Math.cos(10 * Math.PI / 180);
 var labelStyle = {
   transform: "translate(14px, -50%)",
   padding: "3px 7px",
@@ -3281,33 +3336,27 @@ var FieldGizmo = ({
   const dragBoundsRef = useRef(null);
   const bounds = dragBounds ?? propBounds;
   const fixedNormal = is2d ? PLANE_NORMAL[plane] ?? 1 : null;
-  const [facing, setFacing] = useState({ normal: fixedNormal ?? 1, near: "max", headOn: false });
-  const facingRef = useRef(facing);
+  const [rectNormal, setRectNormal] = useState(fixedNormal ?? 1);
+  const rectNormalRef = useRef(rectNormal);
   const showHandles = !isLocked && tool === "bounds";
   useFrame(() => {
     if (!showHandles || fixedNormal !== null || dragStartRef.current || !rootRef.current) return;
-    const local = rootRef.current.worldToLocal(camera.getWorldPosition(new THREE.Vector3()));
-    const toCamera = [0, 1, 2].map(
-      (i) => local.getComponent(i) - (bounds.min[i] + bounds.max[i]) / 2
-    );
-    const normal = pickFacingAxis(toCamera, facingRef.current.normal);
-    const near = toCamera[normal] >= 0 ? "max" : "min";
-    const length = Math.hypot(...toCamera);
-    const headOn = length > 0 && Math.abs(toCamera[normal]) / length > HEAD_ON_COS;
-    const current = facingRef.current;
-    if (normal !== current.normal || near !== current.near || headOn !== current.headOn) {
-      facingRef.current = { normal, near, headOn };
-      setFacing(facingRef.current);
+    const basis = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    rootRef.current.matrixWorld.extractBasis(basis[0], basis[1], basis[2]);
+    const edges = basis.map((v, i) => {
+      const size = Math.abs(bounds.max[i] - bounds.min[i]) || 1;
+      return [v.x * size, v.y * size, v.z * size];
+    });
+    const view = camera.getWorldDirection(new THREE.Vector3());
+    const normal = pickRectAxis(edges, [view.x, view.y, view.z], rectNormalRef.current);
+    if (normal !== rectNormalRef.current) {
+      rectNormalRef.current = normal;
+      setRectNormal(normal);
     }
   });
   const handles = useMemo(
-    () => buildBoundsHandles(
-      bounds,
-      fixedNormal ?? facing.normal,
-      fixedNormal !== null ? "min" : facing.near,
-      !is2d && !facing.headOn
-    ),
-    [bounds, fixedNormal, facing, is2d]
+    () => buildBoundsHandles(bounds, fixedNormal ?? rectNormal),
+    [bounds, fixedNormal, rectNormal]
   );
   const handleDragStart = useCallback((spec) => {
     interaction.setGizmoDragging(true);
@@ -3319,7 +3368,7 @@ var FieldGizmo = ({
   const handleDrag = useCallback((spec, pointer, mods) => {
     const start = dragStartRef.current;
     if (!start) return;
-    const next = applyBoundsDrag(start, spec, pointer, cell, mods);
+    const next = spec.kind === "move" ? applyBoundsMove(start, spec, pointer, cell, mods) : applyBoundsDrag(start, spec, pointer, cell, mods);
     dragBoundsRef.current = next;
     setDragBounds(next);
   }, [cell]);
@@ -3375,14 +3424,14 @@ var FieldGizmo = ({
   const dragging = activeHandle !== null;
   const segments = useMemo(() => dragging ? boxSegments(bounds, fixedNormal) : null, [dragging, bounds, fixedNormal]);
   const sizeLabel = useMemo(() => {
-    if (!dragging) return null;
+    if (!dragging || activeHandle?.kind === "move") return null;
     const axes = is2d ? [0, 1, 2].filter((axis) => axis !== fixedNormal) : [0, 1, 2];
     const cells = cell !== null ? cellCounts(bounds, cell) : null;
     return {
       size: axes.map((axis) => formatLength(bounds.max[axis] - bounds.min[axis])).join(" \xD7 "),
       cells: cells ? `${axes.map((axis) => cells[axis]).join(" \xD7 ")} cells` : null
     };
-  }, [dragging, bounds, cell, is2d, fixedNormal]);
+  }, [dragging, activeHandle, bounds, cell, is2d, fixedNormal]);
   const labelAnchor = useMemo(
     () => activeHandle ? handles.find((h) => h.id === activeHandle.id)?.position ?? activeHandle.position : null,
     [activeHandle, handles]
@@ -3792,7 +3841,7 @@ var useMemo2 = React3.useMemo;
 var useRef2 = React3.useRef;
 var useState2 = React3.useState;
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/shared/src/utils.js
 var toKebabCase = (string) => string.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 var toCamelCase = (string) => string.replace(
   /^([A-Z])|[\s-_]+(\w)/g,
@@ -3813,7 +3862,7 @@ var hasA11yProp = (props) => {
   }
 };
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/defaultAttributes.js
 var defaultAttributes = {
   xmlns: "http://www.w3.org/2000/svg",
   width: 24,
@@ -3826,7 +3875,7 @@ var defaultAttributes = {
   strokeLinejoin: "round"
 };
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/Icon.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/Icon.js
 var Icon = forwardRef(
   ({
     color = "currentColor",
@@ -3857,7 +3906,7 @@ var Icon = forwardRef(
   )
 );
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/createLucideIcon.js
 var createLucideIcon = (iconName, iconNode) => {
   const Component = forwardRef(
     ({ className, ...props }, ref) => createElement(Icon, {
@@ -3875,7 +3924,7 @@ var createLucideIcon = (iconName, iconNode) => {
   return Component;
 };
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/clapperboard.js
 var __iconNode = [
   [
     "path",
@@ -3887,7 +3936,7 @@ var __iconNode = [
 ];
 var Clapperboard = createLucideIcon("clapperboard", __iconNode);
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/film.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/film.js
 var __iconNode2 = [
   ["rect", { width: "18", height: "18", x: "3", y: "3", rx: "2", key: "afitv7" }],
   ["path", { d: "M7 3v18", key: "bbkbws" }],
@@ -3900,7 +3949,7 @@ var __iconNode2 = [
 ];
 var Film = createLucideIcon("film", __iconNode2);
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/image-down.js
 var __iconNode3 = [
   [
     "path",
@@ -3915,14 +3964,14 @@ var __iconNode3 = [
 ];
 var ImageDown = createLucideIcon("image-down", __iconNode3);
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/pause.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/pause.js
 var __iconNode4 = [
   ["rect", { x: "14", y: "3", width: "5", height: "18", rx: "1", key: "kaeet6" }],
   ["rect", { x: "5", y: "3", width: "5", height: "18", rx: "1", key: "1wsw3u" }]
 ];
 var Pause = createLucideIcon("pause", __iconNode4);
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/play.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/play.js
 var __iconNode5 = [
   [
     "path",
@@ -3934,7 +3983,7 @@ var __iconNode5 = [
 ];
 var Play = createLucideIcon("play", __iconNode5);
 
-// ../../../../witwin-studio/.claude/worktrees/serene-snyder-857b71/studio/node_modules/lucide-react/dist/esm/icons/video.js
+// ../../../witwin-studio/studio/node_modules/lucide-react/dist/esm/icons/video.js
 var __iconNode6 = [
   [
     "path",
